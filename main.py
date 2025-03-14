@@ -47,25 +47,32 @@ def register_team(team_name: str):
         return {"error": "Team name already registered"}
     
     registered_teams[team_name] = "Waiting to enter draft mode..."
+    fantasy_teams[team_name] = []  # Initialize the team in fantasy_teams
     return {"message": f"{team_name} registered successfully!", "status": registered_teams[team_name]}
-
-@app.get("/enter_draft_mode")
-def enter_draft_mode(team_name: str):
-    if team_name not in registered_teams:
-        return {"error": "Team not registered"}
-
-    draft_ready.add(team_name)
-    registered_teams[team_name] = "Waiting for draft to start..."
-
-    # If all 3 players are ready, start the draft automatically
-    if len(draft_ready) == 3:
-        return start_draft()
-
-    return {"message": f"{team_name} entered draft mode!", "status": registered_teams[team_name]}
 
 @app.get("/get_registered_teams")
 def get_registered_teams():
     return {"teams": registered_teams}
+
+@app.get("/get_draftable_drivers")
+def get_draftable_drivers():
+    drafted_drivers = {driver for picks in draft_picks.values() for driver in picks}
+    available_drivers = [driver for driver in OFFICIAL_2025_DRIVERS if driver not in drafted_drivers]
+    return {"drivers": available_drivers}
+
+@app.post("/assign_driver")
+def assign_driver(team_name: str, driver_name: str):
+    if team_name not in fantasy_teams:
+        raise HTTPException(status_code=404, detail="Team not found!")
+    
+    if driver_name not in OFFICIAL_2025_DRIVERS:
+        raise HTTPException(status_code=400, detail="Invalid driver!")
+
+    if any(driver_name in picks for picks in draft_picks.values()):
+        raise HTTPException(status_code=400, detail="Driver already drafted!")
+
+    draft_picks.setdefault(team_name, []).append(driver_name)
+    return {"message": f"{driver_name} assigned to {team_name}", "draft_picks": draft_picks}
 
 # ✅ Start the snake draft
 @app.get("/start_draft")
@@ -95,6 +102,18 @@ def draft_driver(team_name: str, driver_name: str):
 
     draft_picks[team_name].append(driver_name)
     return {"message": f"{team_name} drafted {driver_name}!", "draft_picks": draft_picks}
+
+# ✅ Undo a draft
+@app.post("/undo_draft")
+def undo_draft(team_name: str, driver_name: str):
+    if team_name not in fantasy_teams:
+        raise HTTPException(status_code=404, detail="Team not found!")
+
+    if driver_name not in draft_picks[team_name]:
+        raise HTTPException(status_code=400, detail="Driver not drafted by this team!")
+
+    draft_picks[team_name].remove(driver_name)
+    return {"message": f"{driver_name} removed from {team_name}!", "draft_picks": draft_picks}
 
 # ✅ Allow teams to trade drivers
 @app.post("/trade_driver")
