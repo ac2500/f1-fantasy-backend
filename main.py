@@ -4,6 +4,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
+# Track registered teams and draft readiness
+global registered_teams
+registered_teams = {}
+
+global draft_ready
+draft_ready = set()
 
 # Enable CORS for frontend access
 app.add_middleware(
