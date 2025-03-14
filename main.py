@@ -100,11 +100,12 @@ def trade_driver(team1: str, team2: str, driver1: str, driver2: str, points: int
 # ✅ Mid-Season Redraft (After Race 12)
 @app.get("/midseason_redraft")
 def midseason_redraft():
-    sorted_teams = sorted(draft_picks.keys(), key=lambda team: sum([0 for d in draft_picks[team]]))  
     global draft_order
+    global draft_picks  # Ensure this is defined BEFORE usage
+
+    sorted_teams = sorted(draft_picks.keys(), key=lambda team: sum([0 for d in draft_picks[team]]))  
     draft_order = sorted_teams[::-1]  # Reverse order for last-place priority
-    global draft_picks
-    draft_picks = {team: [] for team in draft_order}  
+    draft_picks = {team: [] for team in draft_order}  # Reset drafted teams
 
     return {"message": "Midseason redraft started!", "new_draft_order": draft_order}
 
