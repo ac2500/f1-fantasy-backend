@@ -14,7 +14,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ Official 2025 Full-Time Drivers (Manually Verified)
+# ✅ Official 2025 Full-Time Drivers
 OFFICIAL_2025_DRIVERS = [
     "Max Verstappen", "Liam Lawson",
     "Lando Norris", "Oscar Piastri",
@@ -28,131 +28,87 @@ OFFICIAL_2025_DRIVERS = [
     "Nico Hülkenberg", "Gabriel Bortoleto"
 ]
 
-# ✅ Normalize names to avoid formatting mismatches
-def normalize_name(name):
-    return unicodedata.normalize("NFKD", name).lower().strip()
+# ✅ Store fantasy teams, draft order, and driver trades
+fantasy_teams = {}
+draft_order = []
+draft_picks = {}
+driver_trades = []
 
-# ✅ Fetch live drivers from Jolpica API
-def get_live_drivers():
-    url = "https://api.jolpi.ca/ergast/f1/current/drivers.json"
-    response = requests.get(url)
+# ✅ Register a fantasy team
+@app.post("/register_team")
+def register_team(team_name: str):
+    if team_name in fantasy_teams:
+        raise HTTPException(status_code=400, detail="Team name already exists!")
+    
+    if len(fantasy_teams) >= 3:
+        raise HTTPException(status_code=400, detail="Only 3 teams allowed in this league!")
 
-    if response.status_code != 200:
-        raise HTTPException(status_code=500, detail="Failed to fetch driver data")
+    fantasy_teams[team_name] = []
+    draft_order.append(team_name)
+    return {"message": f"Team '{team_name}' registered!", "draft_order": draft_order}
 
-    data = response.json()
-    all_drivers = data["MRData"]["DriverTable"]["Drivers"]
+# ✅ Start the snake draft
+@app.get("/start_draft")
+def start_draft():
+    if len(fantasy_teams) < 3:
+        raise HTTPException(status_code=400, detail="Need 3 teams to start draft!")
 
-    # ✅ Ensure we **only** return 2025 full-time drivers
-    filtered_drivers = [
-        f"{driver['givenName']} {driver['familyName']}"
-        for driver in all_drivers
-        if normalize_name(f"{driver['givenName']} {driver['familyName']}") in 
-           [normalize_name(name) for name in OFFICIAL_2025_DRIVERS]
-    ]
+    global draft_picks
+    draft_picks = {team: [] for team in draft_order}
 
-    # ✅ Hardcoded fallback if fewer than 20 drivers appear
-    if len(filtered_drivers) != 20:
-        return OFFICIAL_2025_DRIVERS
+    return {"message": "Draft started!", "draft_order": draft_order}
 
-    return filtered_drivers
+# ✅ Draft a driver (Snake Draft)
+@app.post("/draft_driver")
+def draft_driver(team_name: str, driver_name: str):
+    if team_name not in fantasy_teams:
+        raise HTTPException(status_code=404, detail="Team not found!")
+    
+    if driver_name not in OFFICIAL_2025_DRIVERS:
+        raise HTTPException(status_code=400, detail="Invalid driver!")
 
-# ✅ Fetch real-time driver standings, handling missing data
-def get_driver_points():
-    url = "https://api.jolpi.ca/ergast/f1/current/driverStandings.json"
-    response = requests.get(url)
+    if any(driver_name in picks for picks in draft_picks.values()):
+        raise HTTPException(status_code=400, detail="Driver already drafted!")
 
-    if response.status_code != 200:
-        raise HTTPException(status_code=500, detail="Failed to fetch driver standings")
+    if len(draft_picks[team_name]) >= 6:
+        raise HTTPException(status_code=400, detail="Team has already drafted 6 drivers!")
 
-    data = response.json()
+    draft_picks[team_name].append(driver_name)
+    return {"message": f"{team_name} drafted {driver_name}!", "draft_picks": draft_picks}
 
-    # ✅ Debugging: Print full API response
-    print("Driver Standings API Response:", data)
+# ✅ Allow teams to trade drivers
+@app.post("/trade_driver")
+def trade_driver(team1: str, team2: str, driver1: str, driver2: str, points: int = 0):
+    if team1 not in fantasy_teams or team2 not in fantasy_teams:
+        raise HTTPException(status_code=404, detail="One or both teams not found!")
 
-    # ✅ Handle case where standings might be missing
-    standings = data.get("MRData", {}).get("StandingsTable", {}).get("StandingsLists", [])
+    if driver1 not in draft_picks[team1] or driver2 not in draft_picks[team2]:
+        raise HTTPException(status_code=400, detail="Invalid trade, drivers not owned!")
 
-    if not standings or len(standings) == 0:
-        print("⚠️ No standings data available!")
-        return {driver: 0 for driver in OFFICIAL_2025_DRIVERS}  # Default to 0 points
+    # Swap drivers
+    draft_picks[team1].remove(driver1)
+    draft_picks[team2].remove(driver2)
+    draft_picks[team1].append(driver2)
+    draft_picks[team2].append(driver1)
 
-    # ✅ Extract driver points from standings
-    driver_points = {
-        f"{entry['Driver']['givenName']} {entry['Driver']['familyName']}": int(entry.get("points", 0))
-        for entry in standings[0]["DriverStandings"]
-    }
+    # Optional points trade
+    if points > 0:
+        driver_trades.append({"team1": team1, "team2": team2, "points": points})
 
-    return driver_points
+    return {"message": "Trade completed!", "draft_picks": draft_picks}
 
-# ✅ API endpoint to return **only full-time 2025 F1 drivers**
-@app.get("/available_drivers")
-def fetch_drivers():
-    try:
-        drivers = get_live_drivers()
-        return {"drivers": drivers}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# ✅ Mid-Season Redraft (After Race 12)
+@app.get("/midseason_redraft")
+def midseason_redraft():
+    sorted_teams = sorted(draft_picks.keys(), key=lambda team: sum([0 for d in draft_picks[team]]))  
+    global draft_order
+    draft_order = sorted_teams[::-1]  # Reverse order for last-place priority
+    global draft_picks
+    draft_picks = {team: [] for team in draft_order}  
 
-# ✅ API endpoint to return real-time F1 driver standings
-@app.get("/driver_standings")
-def fetch_driver_standings():
-    try:
-        return get_driver_points()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {"message": "Midseason redraft started!", "new_draft_order": draft_order}
 
-# ✅ Updated function: Teams now show **real-time** driver points
-@app.get("/teams")
-def get_teams():
-    try:
-        drivers = get_live_drivers()  # Fetch real-time drivers
-        driver_points = get_driver_points()  # Fetch real-time points
-
-        # ✅ Assign drivers & update points dynamically
-        teams = {
-            "Red Bull Racing": {
-                "drivers": ["Max Verstappen", "Liam Lawson"],
-                "points": sum(driver_points.get(d, 0) for d in ["Max Verstappen", "Liam Lawson"])
-            },
-            "McLaren": {
-                "drivers": ["Lando Norris", "Oscar Piastri"],
-                "points": sum(driver_points.get(d, 0) for d in ["Lando Norris", "Oscar Piastri"])
-            },
-            "Ferrari": {
-                "drivers": ["Charles Leclerc", "Lewis Hamilton"],
-                "points": sum(driver_points.get(d, 0) for d in ["Charles Leclerc", "Lewis Hamilton"])
-            },
-            "Mercedes": {
-                "drivers": ["George Russell", "Andrea Kimi Antonelli"],
-                "points": sum(driver_points.get(d, 0) for d in ["George Russell", "Andrea Kimi Antonelli"])
-            },
-            "Aston Martin": {
-                "drivers": ["Fernando Alonso", "Lance Stroll"],
-                "points": sum(driver_points.get(d, 0) for d in ["Fernando Alonso", "Lance Stroll"])
-            },
-            "Alpine": {
-                "drivers": ["Pierre Gasly", "Jack Doohan"],
-                "points": sum(driver_points.get(d, 0) for d in ["Pierre Gasly", "Jack Doohan"])
-            },
-            "Haas": {
-                "drivers": ["Esteban Ocon", "Oliver Bearman"],
-                "points": sum(driver_points.get(d, 0) for d in ["Esteban Ocon", "Oliver Bearman"])
-            },
-            "Racing Bulls": {
-                "drivers": ["Isack Hadjar", "Yuki Tsunoda"],
-                "points": sum(driver_points.get(d, 0) for d in ["Isack Hadjar", "Yuki Tsunoda"])
-            },
-            "Williams": {
-                "drivers": ["Alexander Albon", "Carlos Sainz Jr."],
-                "points": sum(driver_points.get(d, 0) for d in ["Alexander Albon", "Carlos Sainz Jr."])
-            },
-            "Kick Sauber": {
-                "drivers": ["Nico Hülkenberg", "Gabriel Bortoleto"],
-                "points": sum(driver_points.get(d, 0) for d in ["Nico Hülkenberg", "Gabriel Bortoleto"])
-            },
-        }
-
-        return {"teams": teams}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# ✅ Check draft status
+@app.get("/draft_status")
+def draft_status():
+    return {"draft_picks": draft_picks, "trades": driver_trades}
