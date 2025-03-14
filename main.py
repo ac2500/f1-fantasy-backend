@@ -12,7 +12,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-registered_teams = {}  # e.g. { "TeamName": ["Driver1", "Driver2"], ... }
+# Data
+registered_teams = {}  # e.g. { "TeamName": ["Driver1", ... up to 6], ... }
 
 all_drivers = [
     "Max Verstappen", "Lewis Hamilton", "Charles Leclerc", "Lando Norris", "Sergio Perez",
@@ -48,7 +49,7 @@ def get_available_drivers():
 
 @app.post("/draft_driver")
 def draft_driver(team_name: str, driver_name: str):
-    """Assign a driver to a team if not drafted yet."""
+    """Assign a driver to a team if not drafted yet and team has < 6 drivers."""
     global registered_teams
     if team_name not in registered_teams:
         raise HTTPException(status_code=404, detail="Team does not exist.")
@@ -59,6 +60,10 @@ def draft_driver(team_name: str, driver_name: str):
     for t, drivers in registered_teams.items():
         if driver_name in drivers:
             raise HTTPException(status_code=400, detail="Driver already drafted!")
+
+    # Check if team has 6 drivers already
+    if len(registered_teams[team_name]) >= 6:
+        raise HTTPException(status_code=400, detail="Team already has 6 drivers!")
 
     registered_teams[team_name].append(driver_name)
     return {"message": f"{driver_name} drafted by {team_name}!"}
@@ -74,3 +79,10 @@ def undo_draft(team_name: str, driver_name: str):
 
     registered_teams[team_name].remove(driver_name)
     return {"message": f"{driver_name} removed from {team_name}."}
+
+@app.post("/reset_teams")
+def reset_teams():
+    """Clears all teams and returns all drivers to the pool."""
+    global registered_teams
+    registered_teams = {}
+    return {"message": "All teams reset and drivers returned to pool!"}
