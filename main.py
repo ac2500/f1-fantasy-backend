@@ -12,7 +12,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Data
+# Global Data
 registered_teams = {}  # e.g. { "TeamName": ["Driver1", ... up to 6], ... }
 
 all_drivers = [
@@ -40,12 +40,21 @@ def get_registered_teams():
     """Return the dict of teams and their drivers."""
     return {"teams": registered_teams}
 
-@app.get("/get_available_drivers")
-def get_available_drivers():
-    """Return only drivers that haven't been drafted yet."""
-    drafted = {driver for team_list in registered_teams.values() for driver in team_list}
-    undrafted = [driver for driver in all_drivers if driver not in drafted]
-    return {"drivers": undrafted}
+@app.get("/get_all_drivers")
+def get_all_drivers():
+    """
+    Return the full driver list so the frontend can handle
+    whether they're drafted or not.
+    """
+    return {"drivers": all_drivers}
+
+@app.get("/get_drafted_status")
+def get_drafted_status():
+    """
+    Return which drivers are drafted by which team, so the frontend can
+    apply strikethrough or remove dropdowns as needed.
+    """
+    return {"teams": registered_teams}
 
 @app.post("/draft_driver")
 def draft_driver(team_name: str, driver_name: str):
@@ -82,7 +91,7 @@ def undo_draft(team_name: str, driver_name: str):
 
 @app.post("/reset_teams")
 def reset_teams():
-    """Clears all teams and returns all drivers to the pool."""
+    """Clears all teams so we can start fresh."""
     global registered_teams
     registered_teams = {}
     return {"message": "All teams reset and drivers returned to pool!"}
