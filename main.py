@@ -57,7 +57,7 @@ def get_live_drivers():
 
     return filtered_drivers
 
-# ✅ Fetch real-time driver points from Jolpica API
+# ✅ Fetch real-time driver standings, handling missing data
 def get_driver_points():
     url = "https://api.jolpi.ca/ergast/f1/current/driverStandings.json"
     response = requests.get(url)
@@ -66,14 +66,20 @@ def get_driver_points():
         raise HTTPException(status_code=500, detail="Failed to fetch driver standings")
 
     data = response.json()
-    standings = data["MRData"]["StandingsTable"]["StandingsLists"]
 
-    if not standings:
-        return {}
+    # ✅ Debugging: Print full API response
+    print("Driver Standings API Response:", data)
+
+    # ✅ Handle case where standings might be missing
+    standings = data.get("MRData", {}).get("StandingsTable", {}).get("StandingsLists", [])
+
+    if not standings or len(standings) == 0:
+        print("⚠️ No standings data available!")
+        return {driver: 0 for driver in OFFICIAL_2025_DRIVERS}  # Default to 0 points
 
     # ✅ Extract driver points from standings
     driver_points = {
-        f"{entry['Driver']['givenName']} {entry['Driver']['familyName']}": int(entry["points"])
+        f"{entry['Driver']['givenName']} {entry['Driver']['familyName']}": int(entry.get("points", 0))
         for entry in standings[0]["DriverStandings"]
     }
 
