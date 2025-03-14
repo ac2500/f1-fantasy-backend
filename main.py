@@ -43,8 +43,8 @@ def get_registered_teams():
 @app.get("/get_all_drivers")
 def get_all_drivers():
     """
-    Return the full driver list so the frontend can handle
-    whether they're drafted or not.
+    Return the full driver list so the frontend can show them all 
+    (with strikethrough if drafted).
     """
     return {"drivers": all_drivers}
 
