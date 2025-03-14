@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 app = FastAPI()
 
@@ -11,6 +12,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Pydantic Model for Drafting
+class DraftRequest(BaseModel):
+    team_name: str
+    driver_name: str
+
+# Pydantic Model for Undo Draft
+class UndoRequest(BaseModel):
+    team_name: str
+    driver_name: str
 
 # Global Data
 registered_teams = {}  # e.g. { "TeamName": ["Driver1", ... up to 6], ... }
@@ -57,9 +68,11 @@ def get_drafted_status():
     return {"teams": registered_teams}
 
 @app.post("/draft_driver")
-def draft_driver(team_name: str, driver_name: str):
+def draft_driver(request: DraftRequest):
     """Assign a driver to a team if not drafted yet and team has < 6 drivers."""
-    global registered_teams
+    team_name = request.team_name
+    driver_name = request.driver_name
+
     if team_name not in registered_teams:
         raise HTTPException(status_code=404, detail="Team does not exist.")
     if driver_name not in all_drivers:
@@ -78,9 +91,11 @@ def draft_driver(team_name: str, driver_name: str):
     return {"message": f"{driver_name} drafted by {team_name}!"}
 
 @app.post("/undo_draft")
-def undo_draft(team_name: str, driver_name: str):
+def undo_draft(request: UndoRequest):
     """Remove a driver from a team, returning them to the available pool."""
-    global registered_teams
+    team_name = request.team_name
+    driver_name = request.driver_name
+
     if team_name not in registered_teams:
         raise HTTPException(status_code=404, detail="Team does not exist.")
     if driver_name not in registered_teams[team_name]:
