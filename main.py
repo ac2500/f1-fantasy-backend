@@ -35,17 +35,31 @@ draft_picks = {}
 driver_trades = []
 
 # ✅ Register a fantasy team
-@app.post("/register_team")
+@app.get("/register_team")
 def register_team(team_name: str):
-    if team_name in fantasy_teams:
-        raise HTTPException(status_code=400, detail="Team name already exists!")
+    if team_name in registered_teams:
+        return {"error": "Team name already registered"}
     
-    if len(fantasy_teams) >= 3:
-        raise HTTPException(status_code=400, detail="Only 3 teams allowed in this league!")
+    registered_teams[team_name] = "Waiting to enter draft mode..."
+    return {"message": f"{team_name} registered successfully!", "status": registered_teams[team_name]}
 
-    fantasy_teams[team_name] = []
-    draft_order.append(team_name)
-    return {"message": f"Team '{team_name}' registered!", "draft_order": draft_order}
+@app.get("/enter_draft_mode")
+def enter_draft_mode(team_name: str):
+    if team_name not in registered_teams:
+        return {"error": "Team not registered"}
+
+    draft_ready.add(team_name)
+    registered_teams[team_name] = "Waiting for draft to start..."
+
+    # If all 3 players are ready, start the draft automatically
+    if len(draft_ready) == 3:
+        return start_draft()
+
+    return {"message": f"{team_name} entered draft mode!", "status": registered_teams[team_name]}
+
+@app.get("/get_registered_teams")
+def get_registered_teams():
+    return {"teams": registered_teams}
 
 # ✅ Start the snake draft
 @app.get("/start_draft")
