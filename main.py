@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+import uuid
 import requests
 
 app = FastAPI()
@@ -135,3 +136,55 @@ def reset_teams():
     global registered_teams
     registered_teams = {}
     return {"message": "All teams reset and drivers returned to pool!"}
+
+# New route: Lock teams => create a new season ID
+@app.post("/lock_teams")
+def lock_teams():
+    """
+    Checks if we have exactly 3 teams with 6 drivers each,
+    then locks them in a new 'season'.
+    Returns a unique season_id for the front-end to load.
+    """
+    # Basic check
+    if len(registered_teams) != 3:
+        raise HTTPException(status_code=400, detail="We need exactly 3 teams to lock.")
+    for t, drs in registered_teams.items():
+        if len(drs) != 6:
+            raise HTTPException(status_code=400, detail=f"Team {t} does not have 6 drivers yet.")
+
+    season_id = str(uuid.uuid4())  # unique ID
+    locked_seasons[season_id] = {
+        "teams": {team: list(drs) for team, drs in registered_teams.items()},
+        "points": {},  # for partial logic if needed
+    }
+    return {"season_id": season_id, "message": "Teams locked for 2025 season!"}
+
+# New route: Retrieve locked season data
+@app.get("/get_season")
+def get_season(season_id: str):
+    """
+    Returns the locked teams + driver info + points for that season.
+    """
+    if season_id not in locked_seasons:
+        raise HTTPException(status_code=404, detail="Season not found.")
+    return locked_seasons[season_id]
+
+# Example partial logic: record driver points
+@app.post("/update_driver_points")
+def update_driver_points(season_id: str, driver_name: str, points: int):
+    """
+    Example route to add points to a driver for a locked season.
+    The front-end can call this after each Grand Prix, ensuring
+    no retroactive points if the driver wasn't on the team yet, etc.
+    """
+    if season_id not in locked_seasons:
+        raise HTTPException(status_code=404, detail="Season not found.")
+    season_data = locked_seasons[season_id]
+
+    # If needed, store partial logic like driver_join_time or only sum from time of joining.
+    # For now, we'll just accumulate points in 'season_data["points"]'
+    if driver_name not in season_data["points"]:
+        season_data["points"][driver_name] = 0
+    season_data["points"][driver_name] += points
+
+    return {"message": f"Added {points} points to {driver_name} in season {season_id}."}
