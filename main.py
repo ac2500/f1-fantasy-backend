@@ -4,6 +4,7 @@ from pydantic import BaseModel
 import requests
 import uuid
 from typing import List, Dict
+from datetime import datetime  # <-- For timestamps in trade history
 
 app = FastAPI()
 
@@ -28,7 +29,8 @@ locked_seasons = {}
 # e.g. locked_seasons[season_id] = {
 #   "teams": { "TeamA": [...], "TeamB": [...] },
 #   "points": { "TeamA": 0, "TeamB": 0 },
-#   "driver_points": { "DriverName": 0 },  # if you track per-driver points
+#   "trade_history": [...],  # array of descriptive strings
+#   "driver_points": { "DriverName": 0 },  # if you track driver-specific points
 # }
 
 # =========== 1) Jolpica fetch on startup ===========
@@ -142,6 +144,8 @@ def lock_teams():
     locked_seasons[season_id] = {
         "teams": {team: list(registered_teams[team]) for team in registered_teams},
         "points": {team: team_points[team] for team in team_points},
+        # Store trade_history so we can log each trade
+        "trade_history": []
         # optional: "driver_points": {} if you want to track driver-specific
     }
     return {"message": "Teams locked for 2025 season!", "season_id": season_id}
@@ -152,9 +156,7 @@ def get_season(season_id: str):
         raise HTTPException(status_code=404, detail="Season not found.")
     return locked_seasons[season_id]
 
-# =========== 4) Balanced Trade in Locked Season (2-sided sweetener) ===========
-
-from pydantic import BaseModel
+# =========== 4) Balanced Trade in Locked Season (2-sided sweetener) + Trade History ===========
 
 class LockedTradeRequest(BaseModel):
     from_team: str
@@ -170,7 +172,7 @@ def trade_locked(season_id: str, request: LockedTradeRequest):
     """
     Balanced trade in the locked environment. Both teams remain at 6 drivers.
     from_team can pay from_team_points to to_team, or to_team can pay to_team_points to from_team,
-    or both.
+    or both. Also logs each trade with a timestamp in trade_history.
     """
     if season_id not in locked_seasons:
         raise HTTPException(status_code=404, detail="Season not found.")
@@ -178,6 +180,10 @@ def trade_locked(season_id: str, request: LockedTradeRequest):
     season_data = locked_seasons[season_id]
     locked_teams = season_data["teams"]
     locked_points = season_data["points"]
+
+    # Ensure trade_history array exists
+    if "trade_history" not in season_data:
+        season_data["trade_history"] = []
 
     # 1. Validate teams
     if request.from_team not in locked_teams or request.to_team not in locked_teams:
@@ -241,6 +247,13 @@ def trade_locked(season_id: str, request: LockedTradeRequest):
     locked_points[request.to_team] -= request.to_team_points
     locked_points[request.from_team] += request.to_team_points
 
+    # 9. Log the trade with timestamp
+    time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    desc = (f"On {time_str}, {request.from_team} traded {request.drivers_from_team} + "
+            f"{request.from_team_points} points to {request.to_team} for "
+            f"{request.drivers_to_team} + {request.to_team_points} points.")
+    season_data["trade_history"].append(desc)
+
     return {
         "message": "Locked season trade completed!",
         "season_id": season_id,
@@ -253,5 +266,6 @@ def trade_locked(season_id: str, request: LockedTradeRequest):
             "name": request.to_team,
             "roster": to_roster,
             "points": locked_points[request.to_team]
-        }
+        },
+        "trade_history": season_data["trade_history"]
     }
