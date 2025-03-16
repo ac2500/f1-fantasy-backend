@@ -15,36 +15,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# URL for 2025 drivers from Jolpica (adjust if needed)
 JOLPICA_2025_URL = "https://api.jolpi.ca/ergast/f1/2025/drivers.json"
 
-# ==============================
-# In-memory data for the DRAFT PHASE
-# ==============================
+# ---------- In-memory data for the DRAFT PHASE ----------
 registered_teams = {}   # e.g. {"TeamA": ["Driver1", ...], "TeamB": [...], ...}
-team_points = {}        # e.g. {"TeamA": 0, "TeamB": 0, ...} for the pre-locked phase
-fetched_drivers = []    # real 2025 drivers from Jolpica
+team_points = {}        # e.g. {"TeamA": 0, "TeamB": 0, ...}
+fetched_drivers = []    # from Jolpica
 
-# ==============================
-# After locking: store a separate "locked season"
-# ==============================
-locked_seasons = {}  
-# Example structure:
-# locked_seasons[season_id] = {
-#   "teams": {"TeamA": [...], "TeamB": [...]},
-#   "points": {"TeamA": 0, "TeamB": 0},
+# ---------- After locking: store a separate "locked season" ----------
+locked_seasons = {}
+# e.g. locked_seasons[season_id] = {
+#   "teams": { "TeamA": [...], "TeamB": [...] },
+#   "points": { "TeamA": 0, "TeamB": 0 },
+#   "driver_points": { "DriverName": 0 },  # if you track per-driver points
 # }
 
-# =========== Startup: fetch real drivers from Jolpica ===========
+# =========== 1) Jolpica fetch on startup ===========
 @app.on_event("startup")
 def fetch_2025_drivers_on_startup():
     global fetched_drivers
     try:
         resp = requests.get(JOLPICA_2025_URL, timeout=10)
         if resp.status_code != 200:
-            print("⚠️ Could not fetch 2025 drivers from Jolpica. Using fallback list.")
+            print("⚠️ Could not fetch 2025 drivers from Jolpica. Using fallback.")
             fetched_drivers = fallback_2025_driver_list()
             return
-        
         data = resp.json()
         jolpica_drivers = data["MRData"]["DriverTable"]["Drivers"]
         fetched_drivers = [
@@ -70,15 +66,14 @@ def fallback_2025_driver_list():
         "Nico Hulkenberg", "Gabriel Bortoleto"
     ]
 
-# =========== Basic Draft Endpoints ===========
-
 @app.get("/")
 def root():
-    return {"message": "F1 Fantasy Backend with Lock + Trades in locked season."}
+    return {"message": "F1 Fantasy Backend with 2-sided sweetener trades in locked season."}
+
+# =========== 2) Draft Phase Endpoints ===========
 
 @app.get("/register_team")
 def register_team(team_name: str):
-    """Register a new team with an empty list of drivers + 0 banked points."""
     global registered_teams, team_points
     if team_name in registered_teams:
         return {"error": "Team name already exists."}
@@ -88,38 +83,28 @@ def register_team(team_name: str):
 
 @app.get("/get_registered_teams")
 def get_registered_teams():
-    """Return the dict of teams and their drivers (draft phase)."""
     return {"teams": registered_teams}
 
 @app.get("/get_team_points")
 def get_team_points():
-    """Return each team's banked points (draft phase)."""
     return {"team_points": team_points}
 
 @app.get("/get_available_drivers")
 def get_available_drivers():
-    """Return only drivers that haven't been drafted yet (draft phase)."""
     drafted = {drv for roster in registered_teams.values() for drv in roster}
     undrafted = [drv for drv in fetched_drivers if drv not in drafted]
     return {"drivers": undrafted}
 
 @app.post("/draft_driver")
 def draft_driver(team_name: str, driver_name: str):
-    """
-    Assign a driver to a team if not drafted yet and team has < 6 drivers.
-    Using query params in POST for V1.1 compatibility.
-    """
     if team_name not in registered_teams:
         raise HTTPException(status_code=404, detail="Team not found.")
     if driver_name not in fetched_drivers:
-        raise HTTPException(status_code=400, detail="Invalid driver name (not in 2025 list).")
+        raise HTTPException(status_code=400, detail="Invalid driver name.")
 
-    # Already drafted?
     for drs in registered_teams.values():
         if driver_name in drs:
             raise HTTPException(status_code=400, detail="Driver already drafted.")
-
-    # Max 6
     if len(registered_teams[team_name]) >= 6:
         raise HTTPException(status_code=400, detail="Team already has 6 drivers!")
 
@@ -128,7 +113,6 @@ def draft_driver(team_name: str, driver_name: str):
 
 @app.post("/undo_draft")
 def undo_draft(team_name: str, driver_name: str):
-    """Remove a driver from a team, returning them to the pool."""
     if team_name not in registered_teams:
         raise HTTPException(status_code=404, detail="Team not found.")
     if driver_name not in registered_teams[team_name]:
@@ -139,63 +123,61 @@ def undo_draft(team_name: str, driver_name: str):
 
 @app.post("/reset_teams")
 def reset_teams():
-    """Clears all teams so we can start fresh. Also resets points."""
     global registered_teams, team_points
     registered_teams = {}
     team_points = {}
     return {"message": "All teams reset and drivers returned to pool!"}
 
-# =========== Lock Teams -> create locked season ===========
+# =========== 3) Lock Teams => create a locked season ===========
 
 @app.post("/lock_teams")
 def lock_teams():
-    """
-    Ensures exactly 3 teams exist, each with 6 drivers, then create a new locked season.
-    Returns a unique season_id + a success message.
-    """
     if len(registered_teams) != 3:
         raise HTTPException(status_code=400, detail="We need exactly 3 teams to lock.")
     for t, drs in registered_teams.items():
         if len(drs) != 6:
             raise HTTPException(status_code=400, detail=f"Team {t} does not have 6 drivers yet.")
 
-    # Create a new locked season
     season_id = str(uuid.uuid4())
     locked_seasons[season_id] = {
-        "teams": { team: list(registered_teams[team]) for team in registered_teams },
-        "points": { team: team_points[team] for team in team_points }
+        "teams": {team: list(registered_teams[team]) for team in registered_teams},
+        "points": {team: team_points[team] for team in team_points},
+        # optional: "driver_points": {} if you want to track driver-specific
     }
     return {"message": "Teams locked for 2025 season!", "season_id": season_id}
 
 @app.get("/get_season")
 def get_season(season_id: str):
-    """Return the locked rosters + points for this season."""
     if season_id not in locked_seasons:
         raise HTTPException(status_code=404, detail="Season not found.")
     return locked_seasons[season_id]
 
-# =========== Trade in the LOCKED season environment ===========
+# =========== 4) Balanced Trade in Locked Season (2-sided sweetener) ===========
+
+from pydantic import BaseModel
 
 class LockedTradeRequest(BaseModel):
     from_team: str
     to_team: str
     drivers_from_team: List[str]
     drivers_to_team: List[str]
-    points: int = 0
+    # two-sided sweetener
+    from_team_points: int = 0  # points from from_team to to_team
+    to_team_points: int = 0    # points from to_team to from_team
 
 @app.post("/trade_locked")
 def trade_locked(season_id: str, request: LockedTradeRequest):
     """
-    Balanced trade within the locked season (no more drafting).
-    Each side must trade the same # of drivers, and from_team can optionally
-    send 'points' as a sweetener. The locked rosters are in locked_seasons[season_id].
+    Balanced trade in the locked environment. Both teams remain at 6 drivers.
+    from_team can pay from_team_points to to_team, or to_team can pay to_team_points to from_team,
+    or both.
     """
     if season_id not in locked_seasons:
         raise HTTPException(status_code=404, detail="Season not found.")
 
     season_data = locked_seasons[season_id]
-    locked_teams: Dict[str, List[str]] = season_data["teams"]
-    locked_points: Dict[str, int] = season_data["points"]
+    locked_teams = season_data["teams"]
+    locked_points = season_data["points"]
 
     # 1. Validate teams
     if request.from_team not in locked_teams or request.to_team not in locked_teams:
@@ -212,26 +194,35 @@ def trade_locked(season_id: str, request: LockedTradeRequest):
         if drv not in to_roster:
             raise HTTPException(status_code=400, detail=f"{request.to_team} does not own {drv}")
 
-    # 3. Balanced trade: same # of drivers each way
+    # 3. Balanced driver swap: same # of drivers each way
     x = len(request.drivers_from_team)
     y = len(request.drivers_to_team)
     if x != y:
         raise HTTPException(status_code=400, detail="Trade must have same # of drivers each way.")
 
-    # 4. Ensure final rosters remain 6
+    # 4. Ensure rosters remain 6
     # from_team has 6 => after removing x, adding y => must remain 6 => y = x
-    # to_team similarly => also remains 6
+    # to_team similarly
 
-    # 5. Validate sweetener points
-    if request.points < 0:
-        raise HTTPException(status_code=400, detail="Sweetener points cannot be negative.")
-    if request.points > locked_points.get(request.from_team, 0):
+    # 5. Validate sweetener from from_team
+    if request.from_team_points < 0:
+        raise HTTPException(status_code=400, detail="from_team_points cannot be negative.")
+    if request.from_team_points > locked_points.get(request.from_team, 0):
         raise HTTPException(
             status_code=400,
-            detail=f"{request.from_team} does not have enough points to trade."
+            detail=f"{request.from_team} does not have enough points to pay {request.from_team_points}."
         )
 
-    # 6. Remove the specified drivers
+    # Validate sweetener from to_team
+    if request.to_team_points < 0:
+        raise HTTPException(status_code=400, detail="to_team_points cannot be negative.")
+    if request.to_team_points > locked_points.get(request.to_team, 0):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{request.to_team} does not have enough points to pay {request.to_team_points}."
+        )
+
+    # 6. Remove drivers
     for drv in request.drivers_from_team:
         from_roster.remove(drv)
     for drv in request.drivers_to_team:
@@ -242,9 +233,13 @@ def trade_locked(season_id: str, request: LockedTradeRequest):
     to_roster.extend(request.drivers_from_team)
 
     # 8. Transfer sweetener points
-    if request.points > 0:
-        locked_points[request.from_team] -= request.points
-        locked_points[request.to_team] += request.points
+    # from_team -> to_team
+    locked_points[request.from_team] -= request.from_team_points
+    locked_points[request.to_team] += request.from_team_points
+
+    # to_team -> from_team
+    locked_points[request.to_team] -= request.to_team_points
+    locked_points[request.from_team] += request.to_team_points
 
     return {
         "message": "Locked season trade completed!",
