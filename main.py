@@ -146,22 +146,27 @@ def reset_teams():
 
 @app.post("/lock_teams")
 def lock_teams():
-    """
-    Ensures exactly 3 teams exist, each with 6 drivers.
-    Returns a success message if valid. (No advanced logic stored yet.)
-    """
+    # Check 3 teams, each with 6 drivers
     if len(registered_teams) != 3:
         raise HTTPException(status_code=400, detail="We need exactly 3 teams to lock.")
+    for team, drivers in registered_teams.items():
+        if len(drivers) != 6:
+            raise HTTPException(status_code=400, detail=f"Team {team} doesn't have 6 drivers yet.")
 
-    for t, drs in registered_teams.items():
-        if len(drs) != 6:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Team {t} does not have 6 drivers yet. Currently has {len(drs)}"
-            )
+    # Generate a unique season ID (store locked data if needed)
+    season_id = str(uuid.uuid4())
+    # Optionally store locked rosters for the new season:
+    # locked_seasons[season_id] = { "teams": copy_of_registered_teams }
+    locked_seasons[season_id] = {
+        "teams": dict(registered_teams),  # copy
+        "points": {}
+    }
+    return {"message": "Teams locked for 2025 season!", "season_id": season_id}
 
-    # If you want a season_id, create it here
-    # season_id = str(uuid.uuid4())
-    # locked_seasons[season_id] = { ... }
+@app.get("/get_season")
+def get_season(season_id: str):
+    if season_id not in locked_seasons:
+        raise HTTPException(status_code=404, detail="Season not found.")
+    return locked_seasons[season_id]
 
-    return {"message": "Teams locked for 2025 season!"}
+    return {"message": "Teams locked for 2025 season!", "season_id": season_id}
