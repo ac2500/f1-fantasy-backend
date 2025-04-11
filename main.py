@@ -8,7 +8,10 @@ from datetime import datetime
 import json
 import logging
 
-# Import database and models
+# Import Session from SQLAlchemy ORM
+from sqlalchemy.orm import Session
+
+# Import your database and models
 from database import SessionLocal, engine, Base
 import models
 
