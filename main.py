@@ -6,12 +6,13 @@ import uuid
 from typing import List
 from datetime import datetime
 import json
+import logging
 
-# DATABASE SETUP (assumes these files are created)
+# Import database and models
 from database import SessionLocal, engine, Base
 import models
 
-# Create the database tables if they do not exist yet.
+# Create database tables if they don't exist
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
@@ -32,7 +33,39 @@ def get_db():
     finally:
         db.close()
 
-# ---------- Fallback driver list and Driver fetching ----------
+# ---------- In-memory Data for Draft Phase (Not persistent after lock) ----------
+# The following in-memory data is no longer used for the locked season,
+# but is still used while the draft is in progress.
+registered_teams = {}   # e.g. {"TeamA": ["Driver1", ...], "TeamB": [...], ...}
+team_points = {}        # e.g. {"TeamA": 0, "TeamB": 0, ...}
+fetched_drivers = []    # from Jolpica
+
+# ---------- After locking: store locked season in Neon ----------
+# The locked season data will be stored permanently in the LockedSeason model.
+
+# =========== 1) Fetch 2025 drivers on startup ===========
+JOLPICA_2025_URL = "https://api.jolpi.ca/ergast/f1/2025/drivers.json"
+
+@app.on_event("startup")
+def fetch_2025_drivers_on_startup():
+    global fetched_drivers
+    try:
+        resp = requests.get(JOLPICA_2025_URL, timeout=10)
+        if resp.status_code != 200:
+            print("⚠️ Could not fetch 2025 drivers from Jolpica. Using fallback.")
+            fetched_drivers = fallback_2025_driver_list()
+            return
+        data = resp.json()
+        jolpica_drivers = data["MRData"]["DriverTable"]["Drivers"]
+        fetched_drivers = [
+            f"{drv['givenName']} {drv['familyName']}"
+            for drv in jolpica_drivers
+        ]
+        print(f"✅ Fetched {len(fetched_drivers)} drivers from Jolpica.")
+    except Exception as e:
+        print(f"⚠️ Exception fetching Jolpica 2025 drivers: {e}")
+        fetched_drivers = fallback_2025_driver_list()
+
 def fallback_2025_driver_list():
     return [
         "Max Verstappen", "Liam Lawson",
@@ -47,85 +80,43 @@ def fallback_2025_driver_list():
         "Nico Hulkenberg", "Gabriel Bortoleto"
     ]
 
-JOLPICA_2025_URL = "https://api.jolpi.ca/ergast/f1/2025/drivers.json"
-
-# =========== 1) Startup: Fetch drivers and sync with the DB ===========
-@app.on_event("startup")
-def fetch_2025_drivers_on_startup():
-    try:
-        resp = requests.get(JOLPICA_2025_URL, timeout=10)
-        if resp.status_code != 200:
-            print("⚠️ Could not fetch 2025 drivers from Jolpica. Using fallback.")
-            driver_names = fallback_2025_driver_list()
-        else:
-            data = resp.json()
-            jolpica_drivers = data["MRData"]["DriverTable"]["Drivers"]
-            driver_names = [
-                f"{drv['givenName']} {drv['familyName']}" for drv in jolpica_drivers
-            ]
-            print(f"✅ Fetched {len(driver_names)} drivers from Jolpica.")
-    except Exception as e:
-        print(f"⚠️ Exception fetching drivers: {e}")
-        driver_names = fallback_2025_driver_list()
-
-    db = SessionLocal()
-    try:
-        # Sync: insert each driver if not already present.
-        existing = db.query(models.Driver).all()
-        existing_names = {drv.name for drv in existing}
-        for name in driver_names:
-            if name not in existing_names:
-                new_driver = models.Driver(name=name, drafted_by=None)
-                db.add(new_driver)
-        db.commit()
-    except Exception as e:
-        print(f"Error syncing drivers to DB: {e}")
-        db.rollback()
-    finally:
-        db.close()
-
 @app.get("/")
 def root():
     return {"message": "F1 Fantasy Backend with persistent data on Neon."}
 
-# =========== 2) Draft Phase Endpoints using the Database ===========
-
-# Replace in-memory team registration with a persistent Team record.
+# =========== 2) Draft Phase Endpoints ===========
 @app.get("/register_team")
 def register_team(team_name: str, db: SessionLocal = Depends(get_db)):
-    # Check if team already exists
+    # Check if team already exists (persistent now via the database)
     existing_team = db.query(models.Team).filter(models.Team.name == team_name).first()
     if existing_team:
         return {"error": "Team name already exists."}
-    # Create a new Team record.
+    # Create a new Team record with an empty roster (stored as JSON string) and 0 points.
     new_team = models.Team(name=team_name, roster=json.dumps([]), points=0)
     db.add(new_team)
     db.commit()
     db.refresh(new_team)
     return {"message": f"{team_name} registered successfully!"}
 
-# Get all registered teams from the database.
 @app.get("/get_registered_teams")
 def get_registered_teams(db: SessionLocal = Depends(get_db)):
     teams = db.query(models.Team).all()
     result = {team.name: json.loads(team.roster) for team in teams}
     return {"teams": result}
 
-# Get the points for each team from the database.
 @app.get("/get_team_points")
 def get_team_points(db: SessionLocal = Depends(get_db)):
     teams = db.query(models.Team).all()
     result = {team.name: team.points for team in teams}
     return {"team_points": result}
 
-# Get available drivers (those that are not yet drafted).
 @app.get("/get_available_drivers")
 def get_available_drivers(db: SessionLocal = Depends(get_db)):
+    # Available drivers are those not yet drafted.
     available = db.query(models.Driver).filter(models.Driver.drafted_by.is_(None)).all()
     available_names = [drv.name for drv in available]
     return {"drivers": available_names}
 
-# Draft a driver to a team.
 @app.post("/draft_driver")
 def draft_driver(team_name: str, driver_name: str, db: SessionLocal = Depends(get_db)):
     team = db.query(models.Team).filter(models.Team.name == team_name).first()
@@ -141,7 +132,7 @@ def draft_driver(team_name: str, driver_name: str, db: SessionLocal = Depends(ge
         raise HTTPException(status_code=400, detail="Invalid driver name.")
     if driver.drafted_by is not None:
         raise HTTPException(status_code=400, detail="Driver already drafted.")
-
+    
     # Update driver record and team roster.
     driver.drafted_by = team.name
     roster.append(driver.name)
@@ -149,7 +140,6 @@ def draft_driver(team_name: str, driver_name: str, db: SessionLocal = Depends(ge
     db.commit()
     return {"message": f"{driver_name} drafted by {team_name}!"}
 
-# Undo a draft: remove a driver from a team.
 @app.post("/undo_draft")
 def undo_draft(team_name: str, driver_name: str, db: SessionLocal = Depends(get_db)):
     team = db.query(models.Team).filter(models.Team.name == team_name).first()
@@ -168,19 +158,17 @@ def undo_draft(team_name: str, driver_name: str, db: SessionLocal = Depends(get_
     db.commit()
     return {"message": f"{driver_name} removed from {team_name}."}
 
-# Reset teams: delete all teams and reset drafted drivers.
 @app.post("/reset_teams")
 def reset_teams(db: SessionLocal = Depends(get_db)):
-    # Delete all teams.
+    # Delete all teams and reset all drivers.
     db.query(models.Team).delete()
-    # Reset all drivers.
     drivers = db.query(models.Driver).all()
     for drv in drivers:
         drv.drafted_by = None
     db.commit()
     return {"message": "All teams reset and drivers returned to pool!"}
 
-# =========== 3) Lock Teams: create a locked season (persistent) ===========
+# =========== 3) Lock Teams: Create a Locked Season ===========
 @app.post("/lock_teams")
 def lock_teams(db: SessionLocal = Depends(get_db)):
     teams = db.query(models.Team).all()
@@ -194,12 +182,13 @@ def lock_teams(db: SessionLocal = Depends(get_db)):
     season_id = str(uuid.uuid4())
     teams_dict = {team.name: json.loads(team.roster) for team in teams}
     points_dict = {team.name: team.points for team in teams}
-    # Create a new LockedSeason record (assumes such a model exists)
+    # Create a new LockedSeason record; note that 'processed_races' is initialized to an empty list.
     new_locked = models.LockedSeason(
         season_id=season_id,
         teams=json.dumps(teams_dict),
         points=json.dumps(points_dict),
-        trade_history=json.dumps([])
+        trade_history=json.dumps([]),
+        processed_races=json.dumps([])
     )
     db.add(new_locked)
     db.commit()
@@ -216,7 +205,7 @@ def get_season(season_id: str, db: SessionLocal = Depends(get_db)):
         "trade_history": json.loads(locked.trade_history)
     }
 
-# =========== 4) Trade in Locked Season (2-sided sweetener with trade history) ===========
+# =========== 4) Trade in Locked Season (2-Sided Sweetener) ===========
 class LockedTradeRequest(BaseModel):
     from_team: str
     to_team: str
@@ -290,3 +279,75 @@ def trade_locked(season_id: str, request: LockedTradeRequest, db: SessionLocal =
         "to_team": {"name": request.to_team, "roster": to_roster, "points": points[request.to_team]},
         "trade_history": trade_history
     }
+
+# =========== 5) NEW: Update Race Points Endpoint ===========
+# This endpoint manually fetches race results (for a specified race_id) from Jolpica,
+# calculates the points earned by drivers, and updates the locked season's team points.
+@app.post("/update_race_points")
+def update_race_points(season_id: str, race_id: str, db: Session = Depends(get_db)):
+    """
+    Manually update the locked season points for a particular race.
+    It fetches race results for the given race_id from the Jolpica API and updates team points.
+    """
+    locked_season = db.query(models.LockedSeason).filter(models.LockedSeason.season_id == season_id).first()
+    if not locked_season:
+        raise HTTPException(status_code=404, detail="Season not found.")
+
+    try:
+        processed_races = json.loads(locked_season.processed_races)
+    except Exception:
+        processed_races = []
+
+    if race_id in processed_races:
+        raise HTTPException(status_code=400, detail="This race has already been processed.")
+
+    # Fetch race results from Jolpica.
+    try:
+        # Note: Adjust the URL as per the Jolpica API specifications.
+        response = requests.get(f"https://api.jolpi.ca/ergast/f1/2025/{race_id}/results.json", timeout=10)
+        if response.status_code != 200:
+            raise HTTPException(status_code=400, detail="Error fetching race data.")
+        race_data = response.json()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching race data: {e}")
+
+    # Parse race results (adjust parsing logic based on the actual API response).
+    try:
+        race_results = race_data["MRData"]["RaceTable"]["Races"][0]["Results"]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error parsing race results: {e}")
+
+    # Create a mapping of driver names to points earned in this race.
+    driver_points = {}
+    for result in race_results:
+        driver_name = f"{result['Driver']['givenName']} {result['Driver']['familyName']}"
+        try:
+            points_earned = float(result["points"])
+        except Exception:
+            points_earned = 0
+        driver_points[driver_name] = points_earned
+
+    teams = json.loads(locked_season.teams)    # e.g., {"TeamA": ["Driver1", ...], ...}
+    points = json.loads(locked_season.points)  # e.g., {"TeamA": 50, "TeamB": 20, ...}
+
+    # For each team, add the points earned by the drivers currently on the team.
+    for team, roster in teams.items():
+        race_total = 0
+        for driver in roster:
+            race_total += driver_points.get(driver, 0)
+        points[team] += race_total
+
+    locked_season.points = json.dumps(points)
+
+    # Record the race as processed.
+    processed_races.append(race_id)
+    locked_season.processed_races = json.dumps(processed_races)
+
+    # Optionally, add a note to the trade history.
+    trade_history = json.loads(locked_season.trade_history)
+    time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    trade_history.append(f"Race {race_id} processed on {time_str}.")
+    locked_season.trade_history = json.dumps(trade_history)
+
+    db.commit()
+    return {"message": "Race points updated successfully.", "points": points}
