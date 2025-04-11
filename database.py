@@ -4,9 +4,9 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
 # Retrieve your Neon connection string from the environment
-DATABASE_URL = os.getenv("NEON_DB_URL")
+DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
-    raise Exception("NEON_DB_URL environment variable is not set.")
+    raise Exception("DATABASE_URL environment variable is not set.")
 
 # Create the SQLAlchemy engine.
 # Neon requires SSL, so we enforce that with "sslmode": "require".
