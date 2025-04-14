@@ -325,7 +325,7 @@ def update_race_points_endpoint(season_id: str, race_id: str = "Bahrain"):
     round_number = 4 if race_id == "Bahrain" else 4  # Adjust logic if you have multiple
     # (You could have a dictionary if you want other races: 'Saudi Arabia': 5, etc.)
 
-    jolpica_url = f"https://api.jolpica.ca/ergast/f1/2025/{round_number}/results.json"
+    jolpica_url = f"https://api.jolpi.ca/ergast/f1/2025/{round_number}/results.json"
 
     try:
         resp = requests.get(jolpica_url, timeout=10)
