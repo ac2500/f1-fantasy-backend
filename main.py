@@ -36,7 +36,7 @@ def get_db():
 
 # Global variable for draft-phase driver list (fetched from Jolpica).
 # This is acceptable for the draft phase; once the season is locked, all critical data is stored in the database.
-JOLPICA_2025_URL = "https://api.jolpica.ca/ergast/f1/2025/drivers.json"
+JOLPICA_2025_URL = "https://api.jolpi.ca/ergast/f1/2025/drivers.json"
 fetched_drivers = []
 
 @app.on_event("startup")
@@ -260,7 +260,7 @@ def update_race_points(season_id: str, race_id: str, db: Session = Depends(get_d
         raise HTTPException(status_code=400, detail="This race has already been processed.")
     try:
         # Update the URL to point to your deployed Jolpica API on Render.
-        response = requests.get(f"https://your-jolpica-api-url.onrender.com/ergast/f1/2025/{race_id}/results.json", timeout=10)
+        response = requests.get(f"https://api.jolpi.ca/ergast/f1/2025/{race_id}/results.json", timeout=10)
         if response.status_code != 200:
             raise HTTPException(status_code=400, detail="Error fetching race data.")
         race_data = response.json()
