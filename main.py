@@ -252,24 +252,88 @@ def update_race_points(season_id: str, race_id: str, db: Session = Depends(get_d
     locked = db.query(models.LockedSeason).filter(models.LockedSeason.season_id == season_id).first()
     if not locked:
         raise HTTPException(status_code=404, detail="Season not found.")
+    
     try:
         processed_races = json.loads(locked.processed_races)
     except Exception:
         processed_races = []
-    if race_id in processed_races:
-        raise HTTPException(status_code=400, detail="This race has already been processed.")
+
+    # Our mapping of race names to their round numbers according to the Jolpi API.
+    race_map = {
+        "Bahrain": "4",
+        "Saudi Arabia": "5",
+        "Miami": "6",
+        "Imola": "7",
+        "Monaco": "8",
+        "Spain": "9",
+        "Canada": "10",
+        "Austria": "11",
+        "UK": "12",
+        "Belgium": "13",
+        "Hungary": "14",
+        "Netherlands": "15",
+        "Monza": "16",
+        "Azerbaijan": "17",
+        "Singapore": "18",
+        "Texas": "19",
+        "Mexico": "20",
+        "Brazil": "21",
+        "Vegas": "22",
+        "Qatar": "23",
+        "Abu Dhabi": "24"
+    }
+    # Our list of races in the season (display names)
+    RACE_LIST = [
+        "Bahrain", "Saudi Arabia", "Miami", "Imola", "Monaco", "Spain",
+        "Canada", "Austria", "UK", "Belgium", "Hungary", "Netherlands",
+        "Monza", "Azerbaijan", "Singapore", "Texas", "Mexico", "Brazil",
+        "Vegas", "Qatar", "Abu Dhabi"
+    ]
+
+    # If the frontend sends "latest", determine the next unprocessed race.
+    if race_id.lower() == "latest":
+        next_race = None
+        for race in RACE_LIST:
+            if race not in processed_races:
+                next_race = race
+                break
+        if not next_race:
+            raise HTTPException(status_code=400, detail="No upcoming race data available.")
+        # Now, use the mapping to get the proper round number.
+        race_round = race_map.get(next_race)
+        if not race_round:
+            raise HTTPException(status_code=400, detail="Race mapping not found.")
+        # We'll store data under the race's name (e.g. "Bahrain")
+        current_race_name = next_race
+        race_id = race_round  # Use the numeric round for the API call.
+    else:
+        # If a specific race_id is provided, look up its name.
+        current_race_name = None
+        for name, r in race_map.items():
+            if r == race_id:
+                current_race_name = name
+                break
+        if not current_race_name:
+            raise HTTPException(status_code=400, detail="Invalid race id provided.")
+
+    # Now fetch the race data from the Jolpi API
     try:
-        # Update the URL to point to your deployed Jolpica API on Render.
-        response = requests.get(f"https://api.jolpi.ca/ergast/f1/2025/{race_id}/results.json", timeout=10)
+        response = requests.get(
+            f"https://api.jolpi.ca/ergast/f1/2025/{race_id}/results.json",
+            timeout=10
+        )
         if response.status_code != 200:
             raise HTTPException(status_code=400, detail="Error fetching race data.")
         race_data = response.json()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching race data: {e}")
+
     try:
         race_results = race_data["MRData"]["RaceTable"]["Races"][0]["Results"]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error parsing race results: {e}")
+
+    # Build driver points mapping from API data.
     driver_points = {}
     for result in race_results:
         driver_name = f"{result['Driver']['givenName']} {result['Driver']['familyName']}"
@@ -278,22 +342,27 @@ def update_race_points(season_id: str, race_id: str, db: Session = Depends(get_d
         except Exception:
             points_earned = 0
         driver_points[driver_name] = points_earned
-    teams = json.loads(locked.teams)
+
+    # Update locked season data.
+    teams = json.loads(locked.teams)  # teams: {TeamName: [driver1, driver2, ...]}
     points = json.loads(locked.points)
-    # Get existing race_points data (if any)
     try:
         race_points_data = json.loads(locked.race_points)
     except Exception:
         race_points_data = {}
-    # For each team and driver, update the race_points for this race.
+
+    # For each team and each driver in that team,
+    # update race_points for current race using the API data.
     for team, roster in teams.items():
         for driver in roster:
             pts = driver_points.get(driver, 0)
-            if race_id not in race_points_data:
-                race_points_data[race_id] = {}
-            race_points_data[race_id][driver] = {"points": pts, "team": team}
+            if current_race_name not in race_points_data:
+                race_points_data[current_race_name] = {}
+            race_points_data[current_race_name][driver] = {"points": pts, "team": team}
+            # Add these points to the overall team points.
             points[team] += pts
-    processed_races.append(race_id)
+
+    processed_races.append(current_race_name)
     locked.points = json.dumps(points)
     locked.race_points = json.dumps(race_points_data)
     locked.processed_races = json.dumps(processed_races)
