@@ -162,7 +162,21 @@ def get_season(season_id: str, db: Session = Depends(get_db)):
         "trade_history": json.loads(locked.trade_history),
         "race_points":   json.loads(locked.race_points)
     }
-
+@app.get("/get_free_agents")
+def get_free_agents(season_id: str, db: Session = Depends(get_db)):
+    # look up the locked season
+    locked = db.query(models.LockedSeason) \
+               .filter(models.LockedSeason.season_id == season_id) \
+               .first()
+    if not locked:
+        raise HTTPException(status_code=404, detail="Season not found.")
+    # pull out each team’s roster
+    teams_dict = json.loads(locked.teams)      # { "TeamA": [...], "TeamB": [...], ... }
+    # flatten into one list
+    drafted = [d for roster in teams_dict.values() for d in roster]
+    # use your fetched_drivers list to compute “free” drivers
+    free_agents = [d for d in fetched_drivers if d not in drafted]
+    return {"free_agents": free_agents}
 # ------------------------------------------------------------------------------
 # Trade + Free-Agency + Points update
 # ------------------------------------------------------------------------------
