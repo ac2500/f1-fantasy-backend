@@ -337,11 +337,30 @@ def update_race_points(season_id: str, race_id: str, db: Session = Depends(get_d
     driver_points = {}
     for result in race_results:
         driver_name = f"{result['Driver']['givenName']} {result['Driver']['familyName']}"
-        try:
-            points_earned = float(result["points"])
-        except Exception:
-            points_earned = 0
-        driver_points[driver_name] = points_earned
+       # ✅ new code
+position = int(result["position"])
+if position <= 10:
+    # use the real F1 points for P1–P10
+    points_earned = float(result["points"])
+elif 11 <= position <= 20:
+    # custom fantasy points for 11th–20th
+    custom_scale = {
+        11: 0.5,
+        12: 0.4,
+        13: 0.3,
+        14: 0.2,
+        15: 0.1,
+        16: 0.05,
+        17: 0.04,
+        18: 0.03,
+        19: 0.02,
+        20: 0.01,
+    }
+    points_earned = custom_scale.get(position, 0)
+else:
+    points_earned = 0
+
+driver_points[driver_name] = points_earned
 
     # Update locked season data.
     teams = json.loads(locked.teams)  # teams: {TeamName: [driver1, driver2, ...]}
