@@ -1,22 +1,21 @@
+# main.py
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import requests
-import uuid
+import requests, uuid, json
 from typing import List
 from datetime import datetime
-import json
-import logging
 
 from sqlalchemy.orm import Session
 from database import SessionLocal, engine, Base
 import models
 
-# Create database tables if they do not exist.
+# ------------------------------------------------------------------------------
+# Boilerplate & startup
+# ------------------------------------------------------------------------------
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://ac2500.github.io"],
@@ -25,7 +24,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Dependency to provide a database session.
 def get_db():
     db = SessionLocal()
     try:
@@ -33,94 +31,78 @@ def get_db():
     finally:
         db.close()
 
-# Global variable for draft-phase driver list (fetched from Jolpica).
+# Global driver list fetched at startup (for draft phase)
 JOLPICA_2025_URL = "https://api.jolpi.ca/ergast/f1/2025/drivers.json"
-fetched_drivers = []
+fetched_drivers: List[str] = []
 
 @app.on_event("startup")
 def fetch_2025_drivers_on_startup():
     global fetched_drivers
     try:
         resp = requests.get(JOLPICA_2025_URL, timeout=10)
-        if resp.status_code != 200:
-            print("⚠️ Could not fetch drivers from Jolpica. Using fallback.")
-            fetched_drivers = fallback_2025_driver_list()
-            return
+        resp.raise_for_status()
         data = resp.json()
-        jolpica_drivers = data["MRData"]["DriverTable"]["Drivers"]
         fetched_drivers = [
-            f"{drv['givenName']} {drv['familyName']}"
-            for drv in jolpica_drivers
+            f"{d['givenName']} {d['familyName']}"
+            for d in data["MRData"]["DriverTable"]["Drivers"]
         ]
         print(f"✅ Fetched {len(fetched_drivers)} drivers from Jolpica.")
-    except Exception as e:
-        print(f"⚠️ Exception fetching drivers: {e}")
-        fetched_drivers = fallback_2025_driver_list()
-
-def fallback_2025_driver_list():
-    return [
-        "Max Verstappen", "Liam Lawson",
-        "Lando Norris", "Oscar Piastri",
-        "Charles Leclerc", "Lewis Hamilton",
-        "George Russell", "Andrea Kimi Antonelli",
-        "Fernando Alonso", "Lance Stroll",
-        "Pierre Gasly", "Jack Doohan",
-        "Esteban Ocon", "Oliver Bearman",
-        "Isack Hadjar", "Yuki Tsunoda",
-        "Alexander Albon", "Carlos Sainz Jr.",
-        "Nico Hulkenberg", "Gabriel Bortoleto"
-    ]
+    except Exception:
+        print("⚠️ Could not fetch drivers from Jolpica, using fallback.")
+        fetched_drivers = [
+            "Max Verstappen","Liam Lawson","Lando Norris","Oscar Piastri",
+            "Charles Leclerc","Lewis Hamilton","George Russell",
+            "Andrea Kimi Antonelli","Fernando Alonso","Lance Stroll",
+            "Pierre Gasly","Jack Doohan","Esteban Ocon","Oliver Bearman",
+            "Isack Hadjar","Yuki Tsunoda","Alexander Albon","Carlos Sainz Jr.",
+            "Nico Hulkenberg","Gabriel Bortoleto"
+        ]
 
 @app.get("/")
 def root():
     return {"message": "F1 Fantasy Backend with persistent data on Neon."}
 
-# ---------- Draft Phase Endpoints ----------
+# ------------------------------------------------------------------------------
+# Draft‐phase endpoints
+# ------------------------------------------------------------------------------
 
 @app.get("/register_team")
 def register_team(team_name: str, db: Session = Depends(get_db)):
-    team = db.query(models.Team).filter(models.Team.name == team_name).first()
-    if team:
+    if db.query(models.Team).filter(models.Team.name==team_name).first():
         return {"error": "Team name already exists."}
-    new_team = models.Team(name=team_name, roster=json.dumps([]), points=0)
-    db.add(new_team)
-    db.commit()
-    db.refresh(new_team)
+    team = models.Team(name=team_name, roster=json.dumps([]), points=0)
+    db.add(team); db.commit(); db.refresh(team)
     return {"message": f"{team_name} registered successfully!"}
 
 @app.get("/get_registered_teams")
 def get_registered_teams(db: Session = Depends(get_db)):
     teams = db.query(models.Team).all()
-    result = {team.name: json.loads(team.roster) for team in teams}
-    return {"teams": result}
+    return {"teams": {t.name: json.loads(t.roster) for t in teams}}
 
 @app.get("/get_team_points")
 def get_team_points(db: Session = Depends(get_db)):
     teams = db.query(models.Team).all()
-    result = {team.name: team.points for team in teams}
-    return {"team_points": result}
+    return {"team_points": {t.name: t.points for t in teams}}
 
 @app.get("/get_available_drivers")
 def get_available_drivers(db: Session = Depends(get_db)):
     drafted = []
-    teams = db.query(models.Team).all()
-    for team in teams:
-        drafted.extend(json.loads(team.roster))
-    undrafted = [driver for driver in fetched_drivers if driver not in drafted]
-    return {"drivers": undrafted}
+    for t in db.query(models.Team).all():
+        drafted.extend(json.loads(t.roster))
+    return {"drivers": [d for d in fetched_drivers if d not in drafted]}
 
 @app.post("/draft_driver")
 def draft_driver(team_name: str, driver_name: str, db: Session = Depends(get_db)):
-    team = db.query(models.Team).filter(models.Team.name == team_name).first()
+    team = db.query(models.Team).filter(models.Team.name==team_name).first()
     if not team:
-        raise HTTPException(status_code=404, detail="Team not found.")
+        raise HTTPException(404, "Team not found.")
     roster = json.loads(team.roster)
-    if len(roster) >= 6:
-        raise HTTPException(status_code=400, detail="Team already has 6 drivers!")
-    teams = db.query(models.Team).all()
-    for t in teams:
+    if len(roster)>=6:
+        raise HTTPException(400, "Team already has 6 drivers!")
+    # ensure not already drafted
+    for t in db.query(models.Team).all():
         if driver_name in json.loads(t.roster):
-            raise HTTPException(status_code=400, detail="Driver already drafted.")
+            raise HTTPException(400, "Driver already drafted.")
     roster.append(driver_name)
     team.roster = json.dumps(roster)
     db.commit()
@@ -128,12 +110,12 @@ def draft_driver(team_name: str, driver_name: str, db: Session = Depends(get_db)
 
 @app.post("/undo_draft")
 def undo_draft(team_name: str, driver_name: str, db: Session = Depends(get_db)):
-    team = db.query(models.Team).filter(models.Team.name == team_name).first()
+    team = db.query(models.Team).filter(models.Team.name==team_name).first()
     if not team:
-        raise HTTPException(status_code=404, detail="Team not found.")
+        raise HTTPException(404, "Team not found.")
     roster = json.loads(team.roster)
     if driver_name not in roster:
-        raise HTTPException(status_code=400, detail="Driver not on this team.")
+        raise HTTPException(400, "Driver not on this team.")
     roster.remove(driver_name)
     team.roster = json.dumps(roster)
     db.commit()
@@ -145,199 +127,185 @@ def reset_teams(db: Session = Depends(get_db)):
     db.commit()
     return {"message": "All teams reset and drivers returned to pool!"}
 
-# ---------- Locked Season Endpoints ----------
+# ------------------------------------------------------------------------------
+# Locked‐season endpoints
+# ------------------------------------------------------------------------------
 
 @app.post("/lock_teams")
 def lock_teams(db: Session = Depends(get_db)):
     teams = db.query(models.Team).all()
-    if len(teams) != 3:
-        raise HTTPException(status_code=400, detail="We need exactly 3 teams to lock.")
-    for team in teams:
-        roster = json.loads(team.roster)
-        if len(roster) != 6:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Team {team.name} does not have 6 drivers yet."
-            )
+    if len(teams)!=3:
+        raise HTTPException(400, "We need exactly 3 teams to lock.")
+    for t in teams:
+        if len(json.loads(t.roster))!=6:
+            raise HTTPException(400, f"Team {t.name} does not have 6 drivers.")
     season_id = str(uuid.uuid4())
-    teams_dict = {team.name: json.loads(team.roster) for team in teams}
-    points_dict = {team.name: team.points for team in teams}
-    new_locked = models.LockedSeason(
-        season_id=season_id,
-        teams=json.dumps(teams_dict),
-        points=json.dumps(points_dict),
-        trade_history=json.dumps([]),
-        race_points=json.dumps({}),
-        processed_races=json.dumps([])
+    new = models.LockedSeason(
+        season_id       = season_id,
+        teams           = json.dumps({t.name: json.loads(t.roster) for t in teams}),
+        points          = json.dumps({t.name: t.points for t in teams}),
+        trade_history   = json.dumps([]),
+        race_points     = json.dumps({}),
+        processed_races = json.dumps([])
     )
-    db.add(new_locked)
-    db.commit()
-    return {"message": "Teams locked for 2025 season!", "season_id": season_id}
+    db.add(new); db.commit()
+    return {"message":"Teams locked for 2025 season!","season_id":season_id}
 
 @app.get("/get_season")
 def get_season(season_id: str, db: Session = Depends(get_db)):
-    locked = db.query(models.LockedSeason).filter(
-        models.LockedSeason.season_id == season_id
-    ).first()
+    locked = db.query(models.LockedSeason).filter(models.LockedSeason.season_id==season_id).first()
     if not locked:
-        raise HTTPException(status_code=404, detail="Season not found.")
+        raise HTTPException(404, "Season not found.")
     return {
-        "teams": json.loads(locked.teams),
-        "points": json.loads(locked.points),
+        "teams":         json.loads(locked.teams),
+        "points":        json.loads(locked.points),
         "trade_history": json.loads(locked.trade_history),
-        "race_points": json.loads(locked.race_points)
+        "race_points":   json.loads(locked.race_points)
     }
 
-# ---------- Trade Endpoint ----------
+# ------------------------------------------------------------------------------
+# Trade + Free-Agency + Points update
+# ------------------------------------------------------------------------------
 
 class LockedTradeRequest(BaseModel):
-    from_team: str
-    to_team: str
+    from_team:         str
+    to_team:           str
     drivers_from_team: List[str]
-    drivers_to_team: List[str]
-    from_team_points: int = 0
-    to_team_points: int = 0
+    drivers_to_team:   List[str]
+    from_team_points:  float = 0
+    to_team_points:    float = 0
 
 @app.post("/trade_locked")
 def trade_locked(
     season_id: str,
-    request: LockedTradeRequest,
-    db: Session = Depends(get_db)
+    req: LockedTradeRequest,
+    db: Session = Depends(get_db),
 ):
-    locked = db.query(models.LockedSeason).filter(
-        models.LockedSeason.season_id == season_id
-    ).first()
+    locked = db.query(models.LockedSeason).filter(models.LockedSeason.season_id==season_id).first()
     if not locked:
-        raise HTTPException(status_code=404, detail="Season not found.")
-    teams = json.loads(locked.teams)
-    points = json.loads(locked.points)
-    trade_history = json.loads(locked.trade_history)
+        raise HTTPException(404, "Season not found.")
+    teams        = json.loads(locked.teams)
+    points       = json.loads(locked.points)
+    history      = json.loads(locked.trade_history)
+    FT, TT       = req.from_team, req.to_team
+    from_free    = (FT == "Free Agency")
+    to_free      = (TT == "Free Agency")
 
-    if request.from_team not in teams or request.to_team not in teams:
-        raise HTTPException(status_code=404, detail="Team not found in this season.")
+    # Validate teams or free-agency
+    if not from_free and FT not in teams:
+        raise HTTPException(404, f"{FT} not in this season.")
+    if not to_free   and TT not in teams:
+        raise HTTPException(404, f"{TT} not in this season.")
+    if from_free and to_free:
+        raise HTTPException(400, "Invalid trade: both sides Free Agency.")
 
-    # Validate and swap drivers & sweetener points...
-    from_roster = teams[request.from_team]
-    to_roster   = teams[request.to_team]
-    for drv in request.drivers_from_team:
-        if drv not in from_roster:
-            raise HTTPException(
-                status_code=400,
-                detail=f"{request.from_team} does not own {drv}"
-            )
-    for drv in request.drivers_to_team:
-        if drv not in to_roster:
-            raise HTTPException(
-                status_code=400,
-                detail=f"{request.to_team} does not own {drv}"
-            )
-    if len(request.drivers_from_team) != len(request.drivers_to_team):
-        raise HTTPException(
-            status_code=400,
-            detail="Trade must have same number of drivers each way."
-        )
-    if request.from_team_points > points.get(request.from_team, 0) \
-       or request.to_team_points   > points.get(request.to_team,   0):
-        raise HTTPException(status_code=400, detail="Not enough points for sweetener.")
+    # Validate drivers exist where they should
+    if not from_free:
+        for d in req.drivers_from_team:
+            if d not in teams[FT]:
+                raise HTTPException(400, f"{FT} does not own {d}.")
+    if not to_free:
+        for d in req.drivers_to_team:
+            if d not in teams[TT]:
+                raise HTTPException(400, f"{TT} does not own {d}.")
 
-    # Perform the swap
-    for drv in request.drivers_from_team:
-        from_roster.remove(drv)
-    for drv in request.drivers_to_team:
-        to_roster.remove(drv)
-    from_roster.extend(request.drivers_to_team)
-    to_roster.extend(request.drivers_from_team)
+    # Allow equal‐length swaps only
+    if len(req.drivers_from_team) != len(req.drivers_to_team):
+        raise HTTPException(400, "Must exchange equal numbers of drivers.")
+
+    # Sweetener points can’t be negative or exceed balance
+    if req.from_team_points < 0 or req.to_team_points < 0:
+        raise HTTPException(400, "Sweetener points cannot be negative.")
+    if not from_free and req.from_team_points > points.get(FT,0):
+        raise HTTPException(400, f"{FT} lacks {req.from_team_points} points.")
+    if not to_free   and req.to_team_points   > points.get(TT,0):
+        raise HTTPException(400, f"{TT} lacks {req.to_team_points} points.")
+
+    # Process driver moves
+    if not from_free:
+        for d in req.drivers_from_team:
+            teams[FT].remove(d)
+    if not to_free:
+        for d in req.drivers_to_team:
+            teams[TT].remove(d)
+
+    if not to_free:
+        teams[TT].extend(req.drivers_from_team)
+    if not from_free:
+        teams[FT].extend(req.drivers_to_team)
 
     # Transfer sweetener
-    points[request.from_team] -= request.from_team_points
-    points[request.to_team]   += request.from_team_points
-    points[request.to_team]   -= request.to_team_points
-    points[request.from_team] += request.to_team_points
+    if not from_free:
+        points[FT] -= req.from_team_points
+        points[TT] += req.from_team_points
+    if not to_free:
+        points[TT] -= req.to_team_points
+        points[FT] += req.to_team_points
 
-    time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_entry = (
-        f"On {time_str}, {request.from_team} traded "
-        f"{request.drivers_from_team} + {request.from_team_points}pts to "
-        f"{request.to_team} for {request.drivers_to_team} + {request.to_team_points}pts."
+    # Log it
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    history.append(
+        f"On {now}, {FT} traded {req.drivers_from_team} +{req.from_team_points}pts "
+        f"to {TT} for {req.drivers_to_team} +{req.to_team_points}pts."
     )
-    trade_history.append(log_entry)
 
-    locked.teams = json.dumps(teams)
-    locked.points = json.dumps(points)
-    locked.trade_history = json.dumps(trade_history)
+    # Persist
+    locked.teams         = json.dumps(teams)
+    locked.points        = json.dumps(points)
+    locked.trade_history = json.dumps(history)
     db.commit()
 
     return {
-        "message": "Locked season trade completed!",
-        "trade_history": trade_history
+        "message": "Locked‐season trade completed!",
+        "trade_history": history
     }
 
-# ---------- Update Race Points Endpoint ----------
-
 @app.post("/update_race_points")
-def update_race_points(
-    season_id: str,
-    race_id: str,
-    db: Session = Depends(get_db)
-):
-    locked = db.query(models.LockedSeason).filter(
-        models.LockedSeason.season_id == season_id
-    ).first()
+def update_race_points(season_id: str, race_id: str, db: Session = Depends(get_db)):
+    locked = db.query(models.LockedSeason).filter(models.LockedSeason.season_id==season_id).first()
     if not locked:
-        raise HTTPException(status_code=404, detail="Season not found.")
+        raise HTTPException(404, "Season not found.")
+    processed = json.loads(locked.processed_races or "[]")
+    if race_id in processed:
+        raise HTTPException(400, "This race has already been processed.")
 
+    # fetch from JOLPI endpoint
+    resp = requests.get(
+        f"https://api.jolpi.ca/ergast/f1/2025/{race_id}/results.json", timeout=10
+    )
+    if resp.status_code != 200:
+        raise HTTPException(400, "Error fetching race data.")
+    data = resp.json()
     try:
-        processed_races = json.loads(locked.processed_races)
-    except Exception:
-        processed_races = []
+        results = data["MRData"]["RaceTable"]["Races"][0]["Results"]
+    except (KeyError, IndexError):
+        raise HTTPException(400, "No results for that race.")
 
-    if race_id in processed_races:
-        raise HTTPException(status_code=400, detail="This race has already been processed.")
+    # compute driver→points
+    driver_points = {}
+    for r in results:
+        name = f"{r['Driver']['givenName']} {r['Driver']['familyName']}"
+        try:
+            driver_points[name] = float(r["points"])
+        except:
+            driver_points[name] = 0.0
 
-    # Fetch from Jolpica (correct URL!)
-    try:
-        response = requests.get(
-            f"https://api.jolpi.ca/ergast/f1/2025/{race_id}/results.json",
-            timeout=10
-        )
-        if response.status_code != 200:
-            raise HTTPException(status_code=400, detail="Error fetching race data.")
-        race_data = response.json()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching race data: {e}")
+    teams      = json.loads(locked.teams)
+    points     = json.loads(locked.points)
+    rp         = json.loads(locked.race_points or "{}")
 
-    try:
-        race_results = race_data["MRData"]["RaceTable"]["Races"][0]["Results"]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error parsing race results: {e}")
-
-    teams = json.loads(locked.teams)
-    points = json.loads(locked.points)
-
-    try:
-        race_points_data = json.loads(locked.race_points)
-    except Exception:
-        race_points_data = {}
-
-    for team, roster in teams.items():
+    # bank each drafted driver’s points
+    for team_name, roster in teams.items():
         for driver in roster:
-            pts = float(next(
-                (
-                    r["points"] for r in race_results
-                    if f"{r['Driver']['givenName']} {r['Driver']['familyName']}" == driver
-                ),
-                0
-            ))
-            race_points_data.setdefault(race_id, {})[driver] = {
-                "points": pts,
-                "team": team
-            }
-            points[team] += pts
+            pts = driver_points.get(driver, 0.0)
+            rp.setdefault(race_id, {})[driver] = {"points": pts, "team": team_name}
+            points[team_name] = points.get(team_name, 0) + pts
 
-    processed_races.append(race_id)
-    locked.points = json.dumps(points)
-    locked.race_points = json.dumps(race_points_data)
-    locked.processed_races = json.dumps(processed_races)
+    processed.append(race_id)
 
+    locked.points         = json.dumps(points)
+    locked.race_points    = json.dumps(rp)
+    locked.processed_races= json.dumps(processed)
     db.commit()
+
     return {"message": "Race points updated successfully.", "points": points}
