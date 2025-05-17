@@ -184,6 +184,21 @@ def get_season(season_id: str, db: Session = Depends(get_db)):
         "race_points": json.loads(locked.race_points)
     }
 
+@app.get("/get_undrafted_drivers")
+def get_undrafted_drivers(season_id: str, db: Session = Depends(get_db)):
+    locked = db.query(models.LockedSeason)\
+               .filter(models.LockedSeason.season_id == season_id)\
+               .first()
+    if not locked:
+        raise HTTPException(status_code=404, detail="Season not found.")
+    # all possible drivers from startup fetch
+    all_drivers = set(fetched_drivers)
+    # drafted = union of every team’s roster in this locked season
+    rosters = json.loads(locked.teams)
+    drafted = {d for roster in rosters.values() for d in roster}
+    undrafted = sorted(all_drivers - drafted)
+    return {"undrafted": undrafted}
+
 # ---------- Trade and Points Update Endpoints ----------
 
 class LockedTradeRequest(BaseModel):
