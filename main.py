@@ -85,11 +85,29 @@ def get_team_points(db: Session = Depends(get_db)):
     return {"team_points": {t.name: t.points for t in teams}}
 
 @app.get("/get_available_drivers")
-def get_available_drivers(db: Session = Depends(get_db)):
+def get_available_drivers(
+    season_id: str = None,
+    db: Session = Depends(get_db)
+):
+    # if season_id is passed, use the locked-season rosters
+    if season_id:
+        locked = db.query(models.LockedSeason)\
+                   .filter(models.LockedSeason.season_id == season_id)\
+                   .first()
+        if locked:
+            all_drivers   = list(fetched_drivers)  # full 2025 list
+            locked_roster = []
+            for team, roster in json.loads(locked.teams).items():
+                locked_roster.extend(roster)
+            free_agents = [d for d in all_drivers if d not in locked_roster]
+            return {"drivers": free_agents}
+
+    # fallback to draft-phase logic
     drafted = []
-    for t in db.query(models.Team).all():
-        drafted.extend(json.loads(t.roster))
-    return {"drivers": [d for d in fetched_drivers if d not in drafted]}
+    for team in db.query(models.Team).all():
+        drafted.extend(json.loads(team.roster))
+    undrafted = [driver for driver in fetched_drivers if driver not in drafted]
+    return {"drivers": undrafted}
 
 @app.post("/draft_driver")
 def draft_driver(team_name: str, driver_name: str, db: Session = Depends(get_db)):
