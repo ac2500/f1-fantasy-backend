@@ -280,50 +280,74 @@ def trade_locked(
 
 @app.post("/update_race_points")
 def update_race_points(season_id: str, race_id: str, db: Session = Depends(get_db)):
-    locked = db.query(models.LockedSeason).filter(models.LockedSeason.season_id==season_id).first()
+    locked = db.query(models.LockedSeason)\
+               .filter(models.LockedSeason.season_id == season_id)\
+               .first()
     if not locked:
-        raise HTTPException(404, "Season not found.")
-    processed = json.loads(locked.processed_races or "[]")
-    if race_id in processed:
-        raise HTTPException(400, "This race has already been processed.")
+        raise HTTPException(status_code=404, detail="Season not found.")
 
-    # fetch from JOLPI endpoint
-    resp = requests.get(
-        f"https://api.jolpi.ca/ergast/f1/2025/{race_id}/results.json", timeout=10
-    )
-    if resp.status_code != 200:
-        raise HTTPException(400, "Error fetching race data.")
-    data = resp.json()
+    # Prevent double‐processing
+    processed_races = json.loads(locked.processed_races or "[]")
+    if race_id in processed_races:
+        raise HTTPException(status_code=400, detail="This race has already been processed.")
+
+    # Fetch the Ergast results
     try:
+        resp = requests.get(
+            f"https://api.jolpi.ca/ergast/f1/2025/{race_id}/results.json",
+            timeout=10
+        )
+        if resp.status_code != 200:
+            raise HTTPException(status_code=400, detail="Error fetching race data.")
+        data = resp.json()
         results = data["MRData"]["RaceTable"]["Races"][0]["Results"]
-    except (KeyError, IndexError):
-        raise HTTPException(400, "No results for that race.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching/parsing race data: {e}")
 
-    # compute driver→points
-    driver_points = {}
+    # Build driver→points map with custom scaling for 11–20
+    driver_points: Dict[str, float] = {}
     for r in results:
         name = f"{r['Driver']['givenName']} {r['Driver']['familyName']}"
-        try:
-            driver_points[name] = float(r["points"])
-        except:
-            driver_points[name] = 0.0
+        pos = int(r["position"])
+        if pos <= 10:
+            pts = float(r["points"])
+        elif 11 <= pos <= 20:
+            scale = {
+                11: 0.5,
+                12: 0.4,
+                13: 0.3,
+                14: 0.2,
+                15: 0.1,
+                16: 0.05,
+                17: 0.04,
+                18: 0.03,
+                19: 0.02,
+                20: 0.01,
+            }
+            pts = scale.get(pos, 0)
+        else:
+            pts = 0
+        driver_points[name] = pts
 
-    teams      = json.loads(locked.teams)
-    points     = json.loads(locked.points)
-    rp         = json.loads(locked.race_points or "{}")
+    teams = json.loads(locked.teams)
+    points = json.loads(locked.points)
+    race_points_data = json.loads(locked.race_points or "{}")
 
-    # bank each drafted driver’s points
-    for team_name, roster in teams.items():
-        for driver in roster:
-            pts = driver_points.get(driver, 0.0)
-            rp.setdefault(race_id, {})[driver] = {"points": pts, "team": team_name}
-            points[team_name] = points.get(team_name, 0) + pts
+    # Apply to each team’s roster and increment totals
+    for team, roster in teams.items():
+        for drv in roster:
+            pts = driver_points.get(drv, 0)
+            race_points_data.setdefault(race_id, {})[drv] = {
+                "points": pts,
+                "team": team
+            }
+            points[team] = points.get(team, 0) + pts
 
-    processed.append(race_id)
-
-    locked.points         = json.dumps(points)
-    locked.race_points    = json.dumps(rp)
-    locked.processed_races= json.dumps(processed)
+    # Mark this race done
+    processed_races.append(race_id)
+    locked.points = json.dumps(points)
+    locked.race_points = json.dumps(race_points_data)
+    locked.processed_races = json.dumps(processed_races)
     db.commit()
 
-    return {"message": "Race points updated successfully.", "points": points}
+    return {"message": f"Race {race_id} processed, points applied.", "points": points}
