@@ -178,7 +178,8 @@ def get_season(season_id: str, db: Session = Depends(get_db)):
         "teams":         json.loads(locked.teams),
         "points":        json.loads(locked.points),
         "trade_history": json.loads(locked.trade_history),
-        "race_points":   json.loads(locked.race_points)
+        "race_points":   json.loads(locked.race_points),
+        "processed_races": json.loads(locked.processed_races)
     }
 
 # ------------------------------------------------------------------------------
