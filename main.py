@@ -232,68 +232,87 @@ def trade_locked(season_id: str, request: LockedTradeRequest, db: Session = Depe
     return {"message": "Locked season trade completed!", "trade_history": history}
 
 @app.post("/update_race_points")
-def update_race_points(season_id: str, race_id: str, db: Session = Depends(get_db)):
-    locked = db.query(models.LockedSeason) \
-               .filter(models.LockedSeason.season_id == season_id) \
-               .first()
+def update_race_points(
+    season_id: str,
+    race_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Update points for the next unprocessed race (or a specific race_id).
+    Applies F1 points 1–10 from the API, then 11→0.5, 12→0.45 … 20→0.05.
+    Records processed races so they cannot be applied twice.
+    """
+    locked = (
+        db.query(models.LockedSeason)
+        .filter(models.LockedSeason.season_id == season_id)
+        .first()
+    )
     if not locked:
-        raise HTTPException(404, "Season not found.")
+        raise HTTPException(status_code=404, detail="Season not found.")
 
+    # load JSON blobs
     processed = json.loads(locked.processed_races or "[]")
-    if race_id in processed:
-        raise HTTPException(400, "This race has already been processed.")
+    pts_map    = json.loads(locked.points or "{}")
+    rp_data    = json.loads(locked.race_points or "{}")
+    teams      = json.loads(locked.teams or "{}")
 
-    # fetch results from Jolpica API
+    # determine which race to fetch
+    if race_id.lower() == "latest":
+        # pick next unprocessed round number
+        # round numbers are strings of integers
+        next_round = (
+            max(map(int, processed)) + 1
+            if processed
+            else 4  # start at Imola if nothing else done
+        )
+        race_id = str(next_round)
+    if race_id in processed:
+        raise HTTPException(status_code=400, detail="This race has already been processed.")
+
+    # fetch results
     resp = requests.get(
         f"https://api.jolpi.ca/ergast/f1/2025/{race_id}/results.json",
-        timeout=10
+        timeout=10,
     )
     if resp.status_code != 200:
-        raise HTTPException(400, "Error fetching race data.")
+        raise HTTPException(status_code=400, detail="Error fetching race data.")
     data = resp.json()
+
     try:
         results = data["MRData"]["RaceTable"]["Races"][0]["Results"]
-    except Exception:
-        raise HTTPException(500, "Malformed race data.")
+    except (KeyError, IndexError):
+        raise HTTPException(status_code=500, detail="Malformed race data.")
 
-    # 4) Build driver→points map (API gives 1–10; custom for 11–20)
-    custom = {
-        11: 0.5, 12: 0.4, 13: 0.3, 14: 0.2, 15: 0.1,
-        16: 0.05,17: 0.04,18: 0.03,19: 0.02,20: 0.01
-    }
+    # build driver→points mapping with custom scoring
     driver_pts: Dict[str, float] = {}
     for idx, r in enumerate(results, start=1):
         name = f"{r['Driver']['givenName']} {r['Driver']['familyName']}"
         if idx <= 10:
-            # trust the API’s points field for P1–P10
             pts = float(r.get("points", 0))
         elif idx <= 20:
-            # use our custom half-point scheme for P11–P20
-            pts = custom.get(idx, 0.0)
+            # 11th = 0.5, 12th = 0.45, ... 20th = 0.05
+            pts = max(0.0, 0.55 - 0.05 * idx)
         else:
             pts = 0.0
         driver_pts[name] = pts
 
-    # load existing locked-season data
-    teams   = json.loads(locked.teams)
-    pts_map = json.loads(locked.points)
-    rp_data = json.loads(locked.race_points or "{}")
-
-    # apply points for each rostered driver
+    # apply points to each rostered driver
     rp_data.setdefault(race_id, {})
     for team, roster in teams.items():
+        # ensure team has a running total
+        pts_map.setdefault(team, 0.0)
         for drv in roster:
-            p = driver_pts.get(drv, 0)
+            p = driver_pts.get(drv, 0.0)
             rp_data[race_id][drv] = {"points": p, "team": team}
             pts_map[team] += p
 
-    # mark this race as processed
+    # mark race as processed
     processed.append(race_id)
     locked.points          = json.dumps(pts_map)
     locked.race_points     = json.dumps(rp_data)
     locked.processed_races = json.dumps(processed)
-
     db.commit()
+
     return {"message": "Race points updated successfully.", "points": pts_map}
 
 @app.get("/get_free_agents")
