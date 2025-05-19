@@ -232,28 +232,13 @@ def trade_locked(season_id: str, request: LockedTradeRequest, db: Session = Depe
     return {"message": "Locked season trade completed!", "trade_history": history}
 
 @app.post("/update_race_points")
-def update_race_points(
-    season_id: str,
-    race_id: str,
-    db: Session = Depends(get_db)
-):
-    """
-    Update the locked season with points from a new race.
-    Applies official points for positions 1–10 and custom 0.5→0.1 for 11–20.
-    """
-    # 1) Load the locked season record
-    locked = (
-        db.query(models.LockedSeason)
-          .filter(models.LockedSeason.season_id == season_id)
-          .first()
-    )
+def update_race_points(season_id: str, race_id: str, db: Session = Depends(get_db)):
+    locked = db.query(models.LockedSeason).filter(models.LockedSeason.season_id == season_id).first()
     if not locked:
-        raise HTTPException(status_code=404, detail="Season not found.")
-
-    # 2) Prevent double-processing
+        raise HTTPException(404, "Season not found.")
     processed = json.loads(locked.processed_races or "[]")
     if race_id in processed:
-        raise HTTPException(status_code=400, detail="This race has already been processed.")
+        raise HTTPException(400, "This race has already been processed.")
 
     # 3) Fetch race results from Jolpica/Ergast
     resp = requests.get(
@@ -296,12 +281,14 @@ def update_race_points(
 
     # 6) Mark processed and persist
     processed.append(race_id)
-    locked.points          = json.dumps(pts_map)
-    locked.race_points     = json.dumps(rp_data)
     locked.processed_races = json.dumps(processed)
     db.commit()
 
-    return {"message": "Race points updated successfully.", "points": pts_map}
+    return {
+      "message": "Race points updated successfully.",
+      "points": pts_map,
+      "processed_races": processed
+    }
 
 @app.get("/get_free_agents")
 def get_free_agents(season_id: str, db: Session = Depends(get_db)):
