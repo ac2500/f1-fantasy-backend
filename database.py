@@ -14,7 +14,8 @@ if not DATABASE_URL:
 engine = create_engine(
     DATABASE_URL,
     connect_args={"sslmode": "require"},
-    pool_recycle=3600
+    pool_recycle=3600,
+    pool_pre_ping=True  # ping connections before use to prevent stale/EOF errors
 )
 
 # Create a configured "Session" class.
