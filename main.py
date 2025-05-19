@@ -233,62 +233,68 @@ def trade_locked(season_id: str, request: LockedTradeRequest, db: Session = Depe
 
 @app.post("/update_race_points")
 def update_race_points(season_id: str, race_id: str, db: Session = Depends(get_db)):
-    locked = db.query(models.LockedSeason).filter(models.LockedSeason.season_id == season_id).first()
+    locked = db.query(models.LockedSeason) \
+               .filter(models.LockedSeason.season_id == season_id) \
+               .first()
     if not locked:
         raise HTTPException(404, "Season not found.")
+
     processed = json.loads(locked.processed_races or "[]")
     if race_id in processed:
         raise HTTPException(400, "This race has already been processed.")
 
-    # 3) Fetch race results from Jolpica/Ergast
+    # fetch results from Jolpica API
     resp = requests.get(
         f"https://api.jolpi.ca/ergast/f1/2025/{race_id}/results.json",
         timeout=10
     )
     if resp.status_code != 200:
-        raise HTTPException(status_code=400, detail="Error fetching race data.")
-    payload = resp.json()
+        raise HTTPException(400, "Error fetching race data.")
+    data = resp.json()
     try:
-        results = payload["MRData"]["RaceTable"]["Races"][0]["Results"]
+        results = data["MRData"]["RaceTable"]["Races"][0]["Results"]
     except Exception:
-        raise HTTPException(status_code=500, detail="Malformed race data.")
+        raise HTTPException(500, "Malformed race data.")
 
-    # 4) Build driver→points map
+    # 4) Build driver→points map (API gives 1–10; custom for 11–20)
+    custom = {
+        11: 0.5, 12: 0.4, 13: 0.3, 14: 0.2, 15: 0.1,
+        16: 0.05,17: 0.04,18: 0.03,19: 0.02,20: 0.01
+    }
     driver_pts: Dict[str, float] = {}
     for idx, r in enumerate(results, start=1):
         name = f"{r['Driver']['givenName']} {r['Driver']['familyName']}"
-        # API gives 1–10 points; custom for 11–20: 0.5 down to 0.1
         if idx <= 10:
+            # trust the API’s points field for P1–P10
             pts = float(r.get("points", 0))
         elif idx <= 20:
-            pts = 0.6 - 0.05 * idx  # 11→0.05, 12→0.0... etc.
-            pts = max(0.0, pts)
+            # use our custom half-point scheme for P11–P20
+            pts = custom.get(idx, 0.0)
         else:
             pts = 0.0
         driver_pts[name] = pts
 
-    # 5) Load and update DB fields
-    teams    = json.loads(locked.teams)
-    pts_map  = json.loads(locked.points or "{}")
-    rp_data  = json.loads(locked.race_points or "{}")
+    # load existing locked-season data
+    teams   = json.loads(locked.teams)
+    pts_map = json.loads(locked.points)
+    rp_data = json.loads(locked.race_points or "{}")
 
+    # apply points for each rostered driver
     rp_data.setdefault(race_id, {})
     for team, roster in teams.items():
         for drv in roster:
-            p = driver_pts.get(drv, 0.0)
+            p = driver_pts.get(drv, 0)
             rp_data[race_id][drv] = {"points": p, "team": team}
-            pts_map[team] = pts_map.get(team, 0) + p
+            pts_map[team] += p
 
-    # 6) Mark processed and persist
+    # mark this race as processed
     processed.append(race_id)
+    locked.points          = json.dumps(pts_map)
+    locked.race_points     = json.dumps(rp_data)
     locked.processed_races = json.dumps(processed)
-    db.commit()
 
-    return {
-      "message": "Race points updated successfully.",
-      "points": pts_map,
-      "processed_races": processed
-    }
+    db.commit()
+    return {"message": "Race points updated successfully.", "points": pts_map}
 
 @app.get("/get_free_agents")
 def get_free_agents(season_id: str, db: Session = Depends(get_db)):
