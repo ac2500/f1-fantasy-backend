@@ -304,7 +304,7 @@ def update_race_points(
             if rn in processed:
                 continue
             resp  = requests.get(
-                f"https://api.jolpica-f1/f1/2025/{rn}/results.json", timeout=10
+                f"https://api.jolpi.ca/ergast/f1/2025/{rn}/results.json", timeout=10
             )
             data  = resp.json()
             races = data["MRData"]["RaceTable"]["Races"]
