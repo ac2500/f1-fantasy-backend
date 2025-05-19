@@ -175,15 +175,35 @@ def lock_teams(db: Session = Depends(get_db)):
 
 @app.get("/get_season")
 def get_season(season_id: str, db: Session = Depends(get_db)):
-    locked = db.query(models.LockedSeason).filter(models.LockedSeason.season_id == season_id).first()
+    """
+    Return the locked season’s state, including:
+      - teams & their rosters
+      - total team points
+      - trade history
+      - which races have been processed
+      - per-race, per-driver points (race_points)
+    """
+    locked = (
+        db.query(models.LockedSeason)
+          .filter(models.LockedSeason.season_id == season_id)
+          .first()
+    )
     if not locked:
-        raise HTTPException(404, "Season not found.")
+        raise HTTPException(status_code=404, detail="Season not found.")
+
+    # load all JSON blobs
+    teams           = json.loads(locked.teams           or "{}")
+    points          = json.loads(locked.points          or "{}")
+    trade_history   = json.loads(locked.trade_history   or "[]")
+    processed_races = json.loads(locked.processed_races or "[]")
+    race_points     = json.loads(locked.race_points     or "{}")
+
     return {
-        "teams": json.loads(locked.teams),
-        "points": json.loads(locked.points),
-        "trade_history": json.loads(locked.trade_history),
-        "race_points": json.loads(locked.race_points),
-        "processed_races": json.loads(locked.processed_races)
+        "teams":           teams,
+        "points":          points,
+        "trade_history":   trade_history,
+        "processed_races": processed_races,
+        "race_points":     race_points,   # ← this was missing
     }
 
 class LockedTradeRequest(BaseModel):
