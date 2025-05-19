@@ -216,3 +216,22 @@ def update_race_points(season_id: str, race_id: int, db: Session = Depends(get_d
     locked.processed_races = json.dumps(pr)
     db.commit()
     return {"message": "Race points updated.", "points": points}
+
+@app.get("/get_free_agents")
+def get_free_agents(season_id: str, db: Session = Depends(get_db)):
+    """
+    Return the drivers that were never drafted in the LOCKED season.
+    """
+    locked = db.query(models.LockedSeason) \
+               .filter(models.LockedSeason.season_id == season_id) \
+               .first()
+    if not locked:
+        raise HTTPException(status_code=404, detail="Season not found.")
+
+    teams = json.loads(locked.teams)                # { teamName: [driver,…], … }
+    drafted = {d for roster in teams.values() for d in roster}
+
+    # fetched_drivers was populated on startup with the full 2025 list
+    available = [d for d in fetched_drivers if d not in drafted]
+
+    return {"drivers": available}
