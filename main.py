@@ -8,6 +8,26 @@ import json
 from typing import List
 from datetime import datetime
 
+# —— Add the F1 rounds mapping here ——
+RACE_LIST = [
+    "Bahrain","Saudi Arabia","Miami","Imola",
+    "Monaco","Spain","Canada","Austria",
+    "UK","Belgium","Hungary","Netherlands",
+    "Monza","Azerbaijan","Singapore","Texas",
+    "Mexico","Brazil","Vegas","Qatar",
+    "Abu Dhabi"
+]
+
+ROUND_MAP = {
+    "Bahrain":4,   "Saudi Arabia":5,   "Miami":6,   "Imola":7,
+    "Monaco":8,    "Spain":9,          "Canada":10, "Austria":11,
+    "UK":12,       "Belgium":13,       "Hungary":14,"Netherlands":15,
+    "Monza":16,    "Azerbaijan":17,    "Singapore":18,"Texas":19,
+    "Mexico":20,   "Brazil":21,        "Vegas":22,  "Qatar":23,
+    "Abu Dhabi":24
+}
+# ————————————————————————————————
+
 from sqlalchemy.orm import Session
 from database import SessionLocal, engine, Base
 import models
@@ -275,6 +295,28 @@ def update_race_points(
     pts_map   = json.loads(locked.points or "{}")          # {team: total}
     rp_data   = json.loads(locked.race_points or "{}")     # {"4":{...},"5":{...}, ...}
     teams     = json.loads(locked.teams or "{}")           # {team: [drivers...]}
+
+# ← insert the “latest” block here ↓
+    if race_id == "latest":
+        next_round = None
+        for name in RACE_LIST:
+            rn = str(ROUND_MAP[name])
+            if rn in processed:
+                continue
+            resp  = requests.get(
+                f"https://api.jolpica-f1/f1/2025/{rn}/results.json", timeout=10
+            )
+            data  = resp.json()
+            races = data["MRData"]["RaceTable"]["Races"]
+            if not races:
+                raise HTTPException(400, detail="Next race not yet available")
+            next_round = rn
+            break
+
+        if next_round is None:
+            raise HTTPException(400, detail="All races have been processed")
+        race_id = next_round
+    # ↑ end insertion
 
     # 3) Prevent double‐processing
     if race_id in processed:
