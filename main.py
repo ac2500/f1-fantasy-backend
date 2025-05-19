@@ -63,13 +63,16 @@ def get_team_points(db: Session = Depends(get_db)):
 
 @app.get("/get_available_drivers")
 def get_available_drivers(db: Session = Depends(get_db)):
-    # drivers not drafted
-    all_drafted = []
-    for t in db.query(models.Team).all():
-        all_drafted.extend(json.loads(t.roster))
-    # fetched_drivers stored at startup
-    available = [d for d in models.fetched_drivers if d not in all_drafted]
-    return {"drivers": available}
+    # Collect every driver already drafted by any team
+    drafted = []
+    teams = db.query(models.Team).all()
+    for team in teams:
+        roster = json.loads(team.roster)
+        drafted.extend(roster)
+
+    # Now filter out those from the global fetched_drivers list
+    undrafted = [driver for driver in fetched_drivers if driver not in drafted]
+    return {"drivers": undrafted}
 
 @app.post("/draft_driver")
 def draft_driver(team_name: str, driver_name: str, db: Session = Depends(get_db)):
