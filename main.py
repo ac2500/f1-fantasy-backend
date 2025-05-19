@@ -27,6 +27,20 @@ ROUND_MAP = {
     "Abu Dhabi":24
 }
 # ————————————————————————————————
+# main.py (somewhere near the top, just below ROUND_MAP)
+
+BONUS_MAP = {
+    11: 0.50,
+    12: 0.40,
+    13: 0.30,
+    14: 0.20,
+    15: 0.10,
+    16: 0.05,
+    17: 0.04,
+    18: 0.03,
+    19: 0.02,
+    20: 0.01,
+}
 
 from sqlalchemy.orm import Session
 from database import SessionLocal, engine, Base
@@ -343,19 +357,22 @@ def update_race_points(
 
     # 6) Build driver→points mapping with your custom scoring
     driver_pts: Dict[str, float] = {}
-    for idx, r in enumerate(results, start=1):
-        name = f"{r['Driver']['givenName']} {r['Driver']['familyName']}"
-        if idx <= 10:
-            pts = float(r.get("points", 0))
-        elif 11 <= idx <= 15:
-            # 11→0.5, 12→0.4, 13→0.3, 14→0.2, 15→0.1
-            pts = max(0.0, 0.6 - 0.1 * (idx - 10))
-        elif 16 <= idx <= 20:
-            # 16→0.05,17→0.04,18→0.03,19→0.02,20→0.01
-            pts = max(0.0, 0.05 * (21 - idx))
-        else:
-            pts = 0.0
-        driver_pts[name] = pts
+    for r in results:
+    pos    = int(r["position"])
+    status = r.get("status", "").lower()
+    name   = f"{r['Driver']['givenName']} {r['Driver']['familyName']}"
+
+    # 1) start with the official points (0 for P11+)
+    pts = float(r.get("points", 0))
+
+    # 2) only apply bonus if they actually finished/classified
+    if pos in BONUS_MAP and status in ("finished", "classified"):
+        pts += BONUS_MAP[pos]
+
+    # 3) round to two decimals to avoid float-weirdness
+    pts = round(pts, 2)
+
+    driver_pts[name] = pts
 
     # 7) Apply points to each rostered driver
     rp_data.setdefault(race_id, {})
