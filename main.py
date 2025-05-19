@@ -358,21 +358,21 @@ def update_race_points(
     # 6) Build driver→points mapping with your custom scoring
     driver_pts: Dict[str, float] = {}
     for r in results:
-    pos    = int(r["position"])
-    status = r.get("status", "").lower()
-    name   = f"{r['Driver']['givenName']} {r['Driver']['familyName']}"
+        pos    = int(r["position"])
+        status = r.get("status","").lower()
+        name   = f"{r['Driver']['givenName']} {r['Driver']['familyName']}"
 
-    # 1) start with the official points (0 for P11+)
-    pts = float(r.get("points", 0))
+        # 1) start with the official points (0 for P11+)
+        pts = float(r.get("points", 0))
 
-    # 2) only apply bonus if they actually finished/classified
-    if pos in BONUS_MAP and status in ("finished", "classified"):
-        pts += BONUS_MAP[pos]
+        # 2) only apply bonus if they actually finished/classified
+        if pos in BONUS_MAP and status in ("finished", "classified"):
+            pts += BONUS_MAP[pos]
 
-    # 3) round to two decimals to avoid float-weirdness
-    pts = round(pts, 2)
+        # 3) round to two decimals to avoid float-weirdness
+        pts = round(pts, 2)
 
-    driver_pts[name] = pts
+        driver_pts[name] = pts
 
     # 7) Apply points to each rostered driver
     rp_data.setdefault(race_id, {})
