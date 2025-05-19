@@ -15,6 +15,8 @@ import models
 # Create database tables if they do not exist.
 Base.metadata.create_all(bind=engine)
 
+DEFAULT_FIRST_ROUND = 4  # ← set to whatever your fantasy starts on (e.g. 4 for Bahrain)
+
 app = FastAPI()
 
 app.add_middleware(
@@ -238,11 +240,11 @@ def update_race_points(
     db: Session = Depends(get_db),
 ):
     """
-    Update points for the next unprocessed race (or a specific race_id).
-    1–10 from API; 11th–15th: 0.5→0.1; 16th–20th: 0.05→0.01.
-    Uses only numeric entries in processed_races to compute “latest”.
+    Update points for a locked season:
+    - F1 API 1–10 via its 'points' field
+    - custom 11→0.5, 12→0.4, … 15→0.1, 16→0.05, … 20→0.01
+    - records processed_races so you can never double-count
     """
-    # load locked season
     locked = (
         db.query(models.LockedSeason)
         .filter(models.LockedSeason.season_id == season_id)
@@ -251,54 +253,63 @@ def update_race_points(
     if not locked:
         raise HTTPException(status_code=404, detail="Season not found.")
 
-    # parse JSON blobs
+    # load our JSON blobs
     processed = json.loads(locked.processed_races or "[]")
-    pts_map   = json.loads(locked.points or "{}")
-    rp_data   = json.loads(locked.race_points or "{}")
-    teams     = json.loads(locked.teams or "{}")
+    pts_map    = json.loads(locked.points or "{}")
+    rp_data    = json.loads(locked.race_points or "{}")
+    teams      = json.loads(locked.teams     or "{}")
 
-    # handle “latest”
+    # handle “latest” alias by computing the next numeric round
     if race_id.lower() == "latest":
-        # pick only numeric entries, ignore any names
+        # pick only truly numeric entries
         nums = [int(r) for r in processed if isinstance(r, str) and r.isdigit()]
-        next_round = max(nums) + 1 if nums else 4
+        next_round = max(nums) + 1 if nums else DEFAULT_FIRST_ROUND
         race_id = str(next_round)
 
-    # prevent re-processing
-    if race_id in processed:
-        raise HTTPException(status_code=400, detail="This race has already been processed.")
+    # refuse anything non-numeric now
+    if not race_id.isdigit():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid race_id: '{race_id}'"
+        )
 
-    # fetch results from Ergast
-    resp = requests.get(
-        f"https://api.jolpi.ca/ergast/f1/2025/{race_id}/results.json",
-        timeout=10,
-    )
+    if race_id in processed:
+        raise HTTPException(
+            status_code=400,
+            detail="This race has already been processed."
+        )
+
+    # fetch results
+    api_url = f"https://api.jolpi.ca/ergast/f1/2025/{race_id}/results.json"
+    print("→ fetching race data from:", api_url)   # <<-- check this in your logs
+    resp = requests.get(api_url, timeout=10)
     if resp.status_code != 200:
         raise HTTPException(status_code=400, detail="Error fetching race data.")
     data = resp.json()
 
+    # parse out the results list
     try:
         results = data["MRData"]["RaceTable"]["Races"][0]["Results"]
     except (KeyError, IndexError):
         raise HTTPException(status_code=500, detail="Malformed race data.")
 
-    # map driver→points with your custom 11–20 scoring
+    # build driver→points map with your custom scoring
     driver_pts: Dict[str, float] = {}
     for idx, r in enumerate(results, start=1):
         name = f"{r['Driver']['givenName']} {r['Driver']['familyName']}"
         if idx <= 10:
             pts = float(r.get("points", 0))
         elif idx <= 15:
-            # 11→0.5, 12→0.4, …, 15→0.1
-            pts = (16 - idx) * 0.1
+            # 11→0.5, 12→0.4, 13→0.3, 14→0.2, 15→0.1
+            pts = max(0.0, 0.6 - 0.1 * (idx - 10))
         elif idx <= 20:
-            # 16→0.05, 17→0.04, …, 20→0.01
-            pts = (21 - idx) * 0.01
+            # 16→0.05, 17→0.04, 18→0.03, 19→0.02, 20→0.01
+            pts = max(0.0, 0.05 * (21 - idx))
         else:
             pts = 0.0
         driver_pts[name] = pts
 
-    # apply to each team’s roster
+    # apply to each rostered driver
     rp_data.setdefault(race_id, {})
     for team, roster in teams.items():
         pts_map.setdefault(team, 0.0)
@@ -307,7 +318,7 @@ def update_race_points(
             rp_data[race_id][drv] = {"points": p, "team": team}
             pts_map[team] += p
 
-    # mark processed & save
+    # mark as done and persist
     processed.append(race_id)
     locked.points          = json.dumps(pts_map)
     locked.race_points     = json.dumps(rp_data)
