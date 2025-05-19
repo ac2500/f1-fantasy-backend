@@ -232,43 +232,72 @@ def trade_locked(season_id: str, request: LockedTradeRequest, db: Session = Depe
     return {"message": "Locked season trade completed!", "trade_history": history}
 
 @app.post("/update_race_points")
-def update_race_points(season_id: str, race_id: str, db: Session = Depends(get_db)):
-    locked = db.query(models.LockedSeason).filter(models.LockedSeason.season_id == season_id).first()
+def update_race_points(
+    season_id: str,
+    race_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Update the locked season with points from a new race.
+    Applies official points for positions 1–10 and custom 0.5→0.1 for 11–20.
+    """
+    # 1) Load the locked season record
+    locked = (
+        db.query(models.LockedSeason)
+          .filter(models.LockedSeason.season_id == season_id)
+          .first()
+    )
     if not locked:
-        raise HTTPException(404, "Season not found.")
+        raise HTTPException(status_code=404, detail="Season not found.")
+
+    # 2) Prevent double-processing
     processed = json.loads(locked.processed_races or "[]")
     if race_id in processed:
-        raise HTTPException(400, "This race has already been processed.")
-    # fetch results
-    resp = requests.get(f"https://api.jolpi.ca/ergast/f1/2025/{race_id}/results.json", timeout=10)
-    if resp.status_code != 200:
-        raise HTTPException(400, "Error fetching race data.")
-    data = resp.json()
-    try:
-        results = data["MRData"]["RaceTable"]["Races"][0]["Results"]
-    except:
-        raise HTTPException(500, "Malformed race data.")
-    # map driver→points
-    driver_pts = {
-        f"{r['Driver']['givenName']} {r['Driver']['familyName']}":
-        float(r.get("points", 0))
-        for r in results
-    }
-    teams   = json.loads(locked.teams)
-    pts_map = json.loads(locked.points)
-    rp_data = json.loads(locked.race_points or "{}")
+        raise HTTPException(status_code=400, detail="This race has already been processed.")
 
-    # apply for each rostered driver
+    # 3) Fetch race results from Jolpica/Ergast
+    resp = requests.get(
+        f"https://api.jolpi.ca/ergast/f1/2025/{race_id}/results.json",
+        timeout=10
+    )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=400, detail="Error fetching race data.")
+    payload = resp.json()
+    try:
+        results = payload["MRData"]["RaceTable"]["Races"][0]["Results"]
+    except Exception:
+        raise HTTPException(status_code=500, detail="Malformed race data.")
+
+    # 4) Build driver→points map
+    driver_pts: Dict[str, float] = {}
+    for idx, r in enumerate(results, start=1):
+        name = f"{r['Driver']['givenName']} {r['Driver']['familyName']}"
+        # API gives 1–10 points; custom for 11–20: 0.5 down to 0.1
+        if idx <= 10:
+            pts = float(r.get("points", 0))
+        elif idx <= 20:
+            pts = 0.6 - 0.05 * idx  # 11→0.05, 12→0.0... etc.
+            pts = max(0.0, pts)
+        else:
+            pts = 0.0
+        driver_pts[name] = pts
+
+    # 5) Load and update DB fields
+    teams    = json.loads(locked.teams)
+    pts_map  = json.loads(locked.points or "{}")
+    rp_data  = json.loads(locked.race_points or "{}")
+
     rp_data.setdefault(race_id, {})
     for team, roster in teams.items():
         for drv in roster:
-            p = driver_pts.get(drv, 0)
+            p = driver_pts.get(drv, 0.0)
             rp_data[race_id][drv] = {"points": p, "team": team}
-            pts_map[team] += p
+            pts_map[team] = pts_map.get(team, 0) + p
 
+    # 6) Mark processed and persist
     processed.append(race_id)
-    locked.points         = json.dumps(pts_map)
-    locked.race_points    = json.dumps(rp_data)
+    locked.points          = json.dumps(pts_map)
+    locked.race_points     = json.dumps(rp_data)
     locked.processed_races = json.dumps(processed)
     db.commit()
 
