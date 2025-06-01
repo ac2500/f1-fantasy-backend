@@ -366,7 +366,7 @@ def update_race_points(
         pts = float(r.get("points", 0))
 
         # 2) only apply bonus if they actually finished/classified
-        if pos in BONUS_MAP and status in ("finished", "classified"):
+        if pos in BONUS_MAP and status in ("finished", "classified", "lapped"):
             pts += BONUS_MAP[pos]
 
         # 3) round to two decimals to avoid float-weirdness
