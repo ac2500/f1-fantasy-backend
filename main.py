@@ -248,38 +248,85 @@ class LockedTradeRequest(BaseModel):
 
 @app.post("/trade_locked")
 def trade_locked(season_id: str, request: LockedTradeRequest, db: Session = Depends(get_db)):
-    locked = db.query(models.LockedSeason).filter(models.LockedSeason.season_id == season_id).first()
+    locked = (
+        db.query(models.LockedSeason)
+          .filter(models.LockedSeason.season_id == season_id)
+          .first()
+    )
     if not locked:
         raise HTTPException(404, "Season not found.")
-    teams = json.loads(locked.teams)
-    points = json.loads(locked.points)
-    history = json.loads(locked.trade_history)
 
-    # validation omitted for brevity… (keep your existing checks)
+    # 1) Load structures
+    teams       = json.loads(locked.teams or "{}")       # { teamName: [driver,…] }
+    free_agents = json.loads(locked.free_agents or "[]") # [ driver,… ]
+    points      = json.loads(locked.points or "{}")
+    history     = json.loads(locked.trade_history or "[]")
 
-    # swap drivers
-    for d in request.drivers_from_team:
-        teams[request.from_team].remove(d)
-    for d in request.drivers_to_team:
-        teams[request.to_team].remove(d)
-    teams[request.from_team].extend(request.drivers_to_team)
-    teams[request.to_team].extend(request.drivers_from_team)
+    # … your existing validation checks here …
 
-    # sweeteners
+    # 2) Remove from “from_team”
+    if request.from_team == "__FREE_AGENCY__":
+        for d in request.drivers_from_team:
+            if d not in free_agents:
+                raise HTTPException(400, detail=f"{d} not in free agency")
+            free_agents.remove(d)
+    else:
+        roster = teams.get(request.from_team, [])
+        for d in request.drivers_from_team:
+            if d not in roster:
+                raise HTTPException(
+                    400, detail=f"{d} not on team {request.from_team}"
+                )
+            roster.remove(d)
+        teams[request.from_team] = roster
+
+    # 3) Remove from “to_team”
+    if request.to_team == "__FREE_AGENCY__":
+        for d in request.drivers_to_team:
+            if d not in free_agents:
+                raise HTTPException(400, detail=f"{d} not in free agency")
+            free_agents.remove(d)
+    else:
+        roster = teams.get(request.to_team, [])
+        for d in request.drivers_to_team:
+            if d not in roster:
+                raise HTTPException(
+                    400, detail=f"{d} not on team {request.to_team}"
+                )
+            roster.remove(d)
+        teams[request.to_team] = roster
+
+    # 4) Add into the opposite side
+    if request.to_team == "__FREE_AGENCY__":
+        free_agents.extend(request.drivers_from_team)
+    else:
+        teams.setdefault(request.to_team, []).extend(request.drivers_from_team)
+
+    if request.from_team == "__FREE_AGENCY__":
+        free_agents.extend(request.drivers_to_team)
+    else:
+        teams.setdefault(request.from_team, []).extend(request.drivers_to_team)
+
+    # 5) Sweetener point exchange
+    points.setdefault(request.from_team, 0.0)
+    points.setdefault(request.to_team,   0.0)
     points[request.from_team] -= request.from_team_points
     points[request.to_team]   += request.from_team_points
     points[request.to_team]   -= request.to_team_points
     points[request.from_team] += request.to_team_points
 
-    # log it
+    # 6) Log the trade
     time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    history.append(f"On {time_str}, {request.from_team} traded {request.drivers_from_team} + "
-                   f"{request.from_team_points}pts to {request.to_team} for "
-                   f"{request.drivers_to_team} + {request.to_team_points}pts.")
+    history.append(
+        f"On {time_str}, {request.from_team} traded {request.drivers_from_team} "
+        f"+{request.from_team_points}pts to {request.to_team} for "
+        f"{request.drivers_to_team} +{request.to_team_points}pts."
+    )
 
-    # persist
+    # 7) Persist all three blobs
     locked.teams         = json.dumps(teams)
-    locked.points        = json.dumps(points)
+    locked.free_agents  = json.dumps(free_agents)
+    locked.points       = json.dumps(points)
     locked.trade_history = json.dumps(history)
     db.commit()
 
