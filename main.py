@@ -261,13 +261,19 @@ def trade_locked(season_id: str, request: LockedTradeRequest, db: Session = Depe
     points  = json.loads(locked.points or "{}")
     history = json.loads(locked.trade_history or "[]")
 
-    # 2) Fetch full driver list from Jolpi
-    resp = requests.get("https://api.jolpi.ca/ergast/f1/2025/drivers.json", timeout=10)
-    all_drivers = [d["driverId"] for d in resp.json()["MRData"]["DriverTable"]["Drivers"]]
+    # 2) Fetch the full driver list from Jolpi
+    resp = requests.get(
+        "https://api.jolpi.ca/ergast/f1/2025/drivers.json", timeout=10
+    )
+    drivers_list = resp.json()["MRData"]["DriverTable"]["Drivers"]
 
-    # 3) Derive free agents as those not on any team
-    assigned    = {drv for roster in teams.values() for drv in roster}
-    free_agents = [d for d in all_drivers if d not in assigned]
+    # 3) Build free_agents as full names, excluding any currently on a team
+    all_names = [
+        f"{d['givenName']} {d['familyName']}"
+        for d in drivers_list
+    ]
+    assigned      = {name for roster in teams.values() for name in roster}
+    free_agents   = [n for n in all_names if n not in assigned]
 
     # … your existing validation checks …
 
