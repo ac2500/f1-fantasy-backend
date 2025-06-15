@@ -256,47 +256,50 @@ def trade_locked(season_id: str, request: LockedTradeRequest, db: Session = Depe
     if not locked:
         raise HTTPException(404, "Season not found.")
 
-    # 1) Load structures
-    teams       = json.loads(locked.teams or "{}")       # { teamName: [driver,…] }
-    free_agents = json.loads(locked.free_agents or "[]") # [ driver,… ]
-    points      = json.loads(locked.points or "{}")
-    history     = json.loads(locked.trade_history or "[]")
+    # 1) Load existing teams, points, history
+    teams   = json.loads(locked.teams or "{}")
+    points  = json.loads(locked.points or "{}")
+    history = json.loads(locked.trade_history or "[]")
 
-    # … your existing validation checks here …
+    # 2) Fetch full driver list from Jolpi
+    resp = requests.get("https://api.jolpi.ca/ergast/f1/2025/drivers.json", timeout=10)
+    all_drivers = [d["driverId"] for d in resp.json()["MRData"]["DriverTable"]["Drivers"]]
 
-    # 2) Remove from “from_team”
+    # 3) Derive free agents as those not on any team
+    assigned    = {drv for roster in teams.values() for drv in roster}
+    free_agents = [d for d in all_drivers if d not in assigned]
+
+    # … your existing validation checks …
+
+    # 4) Remove from “from_team” or free_agents
     if request.from_team == "__FREE_AGENCY__":
         for d in request.drivers_from_team:
             if d not in free_agents:
-                raise HTTPException(400, detail=f"{d} not in free agency")
+                raise HTTPException(400, detail=f"{d} not available in free agency")
             free_agents.remove(d)
     else:
         roster = teams.get(request.from_team, [])
         for d in request.drivers_from_team:
             if d not in roster:
-                raise HTTPException(
-                    400, detail=f"{d} not on team {request.from_team}"
-                )
+                raise HTTPException(400, detail=f"{d} not on team {request.from_team}")
             roster.remove(d)
         teams[request.from_team] = roster
 
-    # 3) Remove from “to_team”
+    # 5) Remove from “to_team” or free_agents
     if request.to_team == "__FREE_AGENCY__":
         for d in request.drivers_to_team:
             if d not in free_agents:
-                raise HTTPException(400, detail=f"{d} not in free agency")
+                raise HTTPException(400, detail=f"{d} not available in free agency")
             free_agents.remove(d)
     else:
         roster = teams.get(request.to_team, [])
         for d in request.drivers_to_team:
             if d not in roster:
-                raise HTTPException(
-                    400, detail=f"{d} not on team {request.to_team}"
-                )
+                raise HTTPException(400, detail=f"{d} not on team {request.to_team}")
             roster.remove(d)
         teams[request.to_team] = roster
 
-    # 4) Add into the opposite side
+    # 6) Add into opposite sides
     if request.to_team == "__FREE_AGENCY__":
         free_agents.extend(request.drivers_from_team)
     else:
@@ -307,7 +310,7 @@ def trade_locked(season_id: str, request: LockedTradeRequest, db: Session = Depe
     else:
         teams.setdefault(request.from_team, []).extend(request.drivers_to_team)
 
-    # 5) Sweetener point exchange
+    # 7) Sweetener point exchange
     points.setdefault(request.from_team, 0.0)
     points.setdefault(request.to_team,   0.0)
     points[request.from_team] -= request.from_team_points
@@ -315,7 +318,7 @@ def trade_locked(season_id: str, request: LockedTradeRequest, db: Session = Depe
     points[request.to_team]   -= request.to_team_points
     points[request.from_team] += request.to_team_points
 
-    # 6) Log the trade
+    # 8) Log the trade
     time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     history.append(
         f"On {time_str}, {request.from_team} traded {request.drivers_from_team} "
@@ -323,10 +326,9 @@ def trade_locked(season_id: str, request: LockedTradeRequest, db: Session = Depe
         f"{request.drivers_to_team} +{request.to_team_points}pts."
     )
 
-    # 7) Persist all three blobs
+    # 9) Persist only teams, points, history
     locked.teams         = json.dumps(teams)
-    locked.free_agents  = json.dumps(free_agents)
-    locked.points       = json.dumps(points)
+    locked.points        = json.dumps(points)
     locked.trade_history = json.dumps(history)
     db.commit()
 
